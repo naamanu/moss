@@ -100,9 +100,9 @@ describe("codegen", () => {
     const js = compile(`${src}\napp (return (const (text "")))`, "t.moss", { runtimeImport: "../src/runtime/index.ts" });
     // Evaluate the module body with the runtime injected.
     const R = await import("../src/runtime/index.ts");
-    const body = js.replace(/^import .*$/m, "").replace(/^export const main = .*$/m, "");
+    const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
     // eslint-disable-next-line @typescript-eslint/no-implied-eval
-    return new Function("R", `${body}\nreturn { ${[...src.matchAll(/^let (?:rec )?(\w+)/gm)].map((m) => `${m[1]}: $${m[1]}`).join(", ")} };`)(R);
+    return new Function("R", `${body}\nreturn { ${[...src.matchAll(/^let (?:rec )?(\w+)/gm)].map((m) => `${m[1]}: $T_${m[1]}`).join(", ")} };`)(R);
   }
 
   it("compiles pure functions, matches and recursion", async () => {
@@ -203,9 +203,9 @@ describe("accepted programs behave consistently", () => {
   async function evalMoss(src: string, names: string[]): Promise<any[] | string> {
     const R = await import("../src/runtime/index.ts");
     const js = compile(`${src}\napp (return (const (text "")))`, "t.moss");
-    const body = js.replace(/^import .*$/m, "").replace(/^export const main = .*$/m, "");
+    const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
     try {
-      return new Function("R", `${body}\nreturn [${names.map((n) => `$${n}`).join(", ")}];`)(R);
+      return new Function("R", `${body}\nreturn [${names.map((n) => `$T_${n}`).join(", ")}];`)(R);
     } catch (e) {
       return (e as Error).message;
     }
@@ -303,8 +303,8 @@ describe("binding operators", () => {
   async function evalMoss(src: string, names: string[]): Promise<any[]> {
     const R = await import("../src/runtime/index.ts");
     const js = compile(`${src}\napp (return (const (text "")))`, "t.moss");
-    const body = js.replace(/^import .*$/m, "").replace(/^export const main = .*$/m, "");
-    return new Function("R", `${body}\nreturn [${names.map((n) => `$${n}`).join(", ")}];`)(R);
+    const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
+    return new Function("R", `${body}\nreturn [${names.map((n) => `$T_${n}`).join(", ")}];`)(R);
   }
 
   it("lets user code define let*/and*/let+/and+ (an option monad)", async () => {

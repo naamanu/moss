@@ -1,0 +1,3 @@
+(* Html helpers. *)
+
+external none : html = "Html_none"

@@ -20,7 +20,7 @@ async function mount(example: string, binders: Binders) {
   const mod = await import(/* @vite-ignore */ `${out}?t=${Date.now()}`);
   const root = document.createElement("div");
   document.body.replaceChildren(root);
-  const app = R.run(mod.main, root);
+  const app = R.run(mod.app, root);
   return { root, app };
 }
 

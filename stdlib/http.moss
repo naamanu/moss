@@ -1,0 +1,3 @@
+(* HTTP requests as tasks. *)
+
+external get_text : string -> string task = "Http_get_text"

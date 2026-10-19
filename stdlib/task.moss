@@ -1,0 +1,9 @@
+(* Asynchronous tasks, cancellable via the runner. *)
+
+external succeed : 'a -> 'a task = "Task_succeed"
+external fail : string -> 'a task = "Task_fail"
+external map : ('a -> 'b) -> 'a task -> 'b task = "Task_map"
+external and_then : ('a -> 'b task) -> 'a task -> 'b task = "Task_and_then"
+external sleep : int -> unit task = "Task_sleep"
+(* Run a task from an event handler and report its outcome (not cancellable). *)
+external attempt : 'a task -> ('a remote -> unit effect) -> unit effect = "Task_attempt"

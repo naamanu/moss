@@ -1,0 +1,5 @@
+(* Effects: inert descriptions of actions. *)
+
+external none : unit effect = "Effect_none"
+external seq : unit effect list -> unit effect = "Effect_seq"
+external print : string -> unit effect = "Effect_print"

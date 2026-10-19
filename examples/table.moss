@@ -63,7 +63,7 @@ component row_view (r : row val) =
     span [class_ "num"] [text (if expanded then "vol " ^ show r.volume else "…")]
   ]
 
-component main =
+component page =
   let* model, dispatch = state_machine initial reduce in
   let* tick = let+ dispatch = dispatch in dispatch Tick in
   let* _ = every 16 tick in
@@ -89,4 +89,4 @@ component main =
     body
   ]
 
-app main
+app page

@@ -1,0 +1,5 @@
+(* Floating-point numbers. *)
+
+external of_int : int -> float = "Float_of_int"
+external to_string : float -> string = "Float_to_string"
+external fixed : int -> float -> string = "Float_fixed"

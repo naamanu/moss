@@ -26,6 +26,7 @@ app counter
 
 ```sh
 npm install
+node bin/moss.js run examples/hello/hello.moss   # a plain program: runs its `main` with Node
 node bin/moss.js dev examples/table.moss      # http://localhost:5173  (add ?debug for frame timings)
 node bin/moss.js build examples/todo.moss -o dist/todo
 node bin/moss.js check examples/counter.moss
@@ -191,6 +192,44 @@ to a single map node over all the inputs. `moss check`/`build`/`dev` accept
 That option exists only to check that both paths behave the same; the tests
 run every example both ways.
 
+### Modules and programs
+
+Each file is a module named after it: `todo_utils.moss` is `Todo_utils`.
+A module's top-level values, types, constructors and record fields are
+available to other modules by qualified name (`Geometry.area`,
+`Geometry.shape`, `Geometry.Circle`), or unqualified after `open Geometry`.
+A record's fields can always be read and updated when its type is known
+(`p.x`, `{ p with x = 1 }`). Building a record literal needs its fields in
+scope, through `open` or by being in the same module.
+
+The compiler finds a module in the directory of the file being compiled,
+then in the standard library, so a project module can shadow a library
+module. Modules are loaded in dependency order, and a cycle between
+modules is an error.
+
+The standard library lives in `stdlib/`:
+
+- `Prelude` is opened implicitly in every module. It has the core types,
+  `not`/`fst`/`snd`/`id`, and for now the UI primitives.
+- `List`, `Map`, `String`, `Int`, `Float`, `Random`, `Effect`, `Task`,
+  `Http` and `Html` are modules you use by name.
+
+The compiler embeds the library (`scripts/gen-stdlib.mjs`, run by
+`npm test`), so it needs no filesystem and can run in a browser.
+
+A **program** is a module with `main : unit effect`. `moss run file.moss`
+runs `main` with Node and waits for any tasks it started:
+
+```ocaml
+let main =
+  Effect.seq [ Effect.print ("fib 20 = " ^ show (fib 20));
+               Effect.print (Geometry.describe (Geometry.Circle 1.0)) ]
+```
+
+A **UI app** ends with `app page`, where `page : html comp`. `moss build`
+and `moss dev` bundle it for the browser. (In step 3 this becomes
+`let main = Rhizoid.start page`.)
+
 ### Values and their semantics
 
 - **Integers** are JavaScript numbers, exact up to 2^53 − 1. A larger
@@ -231,8 +270,8 @@ Patterns in `let`, `fun` and `let+` must match every value of their type, and
 a case that can never be reached is a warning.
 
 Top-level declarations are `type`, `let`, `component` (a `let` whose body must
-be a `comp`), `external` (binds a JS runtime function to a type), and `app`.
-The prelude is in `src/compiler/prelude.ts`.
+be a `comp`), `external` (binds a JS runtime function to a type), `open`,
+and `app`. The prelude is `stdlib/prelude.moss`.
 
 ## Layout
 
@@ -245,7 +284,8 @@ src/runtime/    incr.ts      height-ordered incremental engine with cutoffs and 
                 vdom.ts      keyed virtual DOM with identity short-circuit
                 prelude.ts   builtins (List, Map, String, Html, Attr, Effect)
 src/cli.ts      check / build (esbuild bundle) / dev (live reload)
-examples/       counter, todo (TodoMVC-style), table (10k live rows), search (async)
+stdlib/         the standard library (Prelude, List, Map, String, ...), embedded into the compiler
+examples/       counter, todo (TodoMVC-style), table (10k live rows), search (async), hello/ (a plain multi-module program)
 ```
 
 ## Performance

@@ -1,0 +1,16 @@
+(* Persistent ordered maps (AVL trees), keyed by structural comparison. *)
+
+external empty : ('k, 'v) map = "Map_empty"
+external add : 'k -> 'v -> ('k, 'v) map -> ('k, 'v) map = "Map_add"
+external remove : 'k -> ('k, 'v) map -> ('k, 'v) map = "Map_remove"
+external find : 'k -> ('k, 'v) map -> 'v option = "Map_find"
+external mem : 'k -> ('k, 'v) map -> bool = "Map_mem"
+external size : ('k, 'v) map -> int = "Map_size"
+external update : 'k -> ('v option -> 'v option) -> ('k, 'v) map -> ('k, 'v) map = "Map_update"
+external values : ('k, 'v) map -> 'v list = "Map_values"
+external keys : ('k, 'v) map -> 'k list = "Map_keys"
+external to_list : ('k, 'v) map -> ('k * 'v) list = "Map_to_list"
+external of_list : ('k * 'v) list -> ('k, 'v) map = "Map_of_list"
+external fold : ('k -> 'v -> 'acc -> 'acc) -> ('k, 'v) map -> 'acc -> 'acc = "Map_fold"
+external filter : ('k -> 'v -> bool) -> ('k, 'v) map -> ('k, 'v) map = "Map_filter"
+external map : ('v -> 'w) -> ('k, 'v) map -> ('k, 'w) map = "Map_map"

@@ -10,6 +10,8 @@
     "./runtime": "./src/runtime/index.ts"
   },
   "scripts": {
+    "gen-stdlib": "node scripts/gen-stdlib.mjs",
+    "pretest": "node scripts/gen-stdlib.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "moss": "tsx src/cli.ts"

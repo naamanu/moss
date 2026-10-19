@@ -89,6 +89,10 @@ class Parser {
       const js = this.expectKind("string", "a JS name string").text;
       return { d: "external", name, type, js, span: this.from(start) };
     }
+    if (this.eat("open")) {
+      const name = this.expectKind("uident", "a module name").text;
+      return { d: "open", name, span: this.from(start) };
+    }
     if (this.eat("app")) {
       const expr = this.expr();
       return { d: "app", expr, span: this.from(start) };
@@ -105,7 +109,7 @@ class Parser {
       const body = this.expr();
       return { d: "let", rec, name, params, body, component, span: this.from(start) };
     }
-    this.fail(`expected a declaration (let, component, type, external, app) but found '${this.tok.text}'`);
+    this.fail(`expected a declaration (let, component, type, external, open, app) but found '${this.tok.text}'`);
   }
 
   private typeDecl(start: Span): Decl {

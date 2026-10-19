@@ -5,7 +5,7 @@
 // is `let+`, whose result is a `'a comp`. `let*` binds the result of a
 // computation as a `val`, and `match*` switches computations on a `val`.
 
-import type { Decl, Expr, Pat, Program, TypeExpr } from "./ast.ts";
+import { type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr, qualify } from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
 import { resolveLetStar } from "./desugar.ts";
 import { checkMatch, type VariantCtor } from "./exhaustive.ts";
@@ -32,6 +32,8 @@ import {
   tfun,
   ttuple,
   tvar,
+  printContext,
+  typeName,
   unify,
 } from "./types.ts";
 
@@ -57,6 +59,8 @@ export interface GlobalInfo {
 
 export interface Checked {
   program: Program;
+  /** Each module's own top-level definitions (short name -> qualified name). */
+  exports: Map<string, ModEnv>;
   globals: Map<string, GlobalInfo>;
   ctors: Map<string, CtorInfo>;
   warnings: MossError[];
@@ -75,6 +79,19 @@ const BUILTIN_TYPES: Record<string, number> = {
 
 /** Types whose values are opaque at runtime (or contain functions) and can't be compared. */
 const OPAQUE = new Set(["effect", "val", "comp", "task", "html", "attr"]);
+
+/** Names visible in (or exported by) a module: short name -> qualified global name. */
+export class ModEnv {
+  values = new Map<string, string>();
+  types = new Map<string, string>();
+  ctors = new Map<string, string>();
+  /** field name -> qualified name of the record type that has it */
+  fields = new Map<string, string>();
+
+  addAll(o: ModEnv): void {
+    for (const k of ["values", "types", "ctors", "fields"] as const) for (const [a, b] of o[k]) this[k].set(a, b);
+  }
+}
 
 class Scope {
   private vars = new Map<string, Scheme>();
@@ -99,10 +116,17 @@ export function typecheck(program: Program): Checked {
 }
 
 class Checker {
+  // Global tables, keyed by qualified name (`Todo.todo`; Prelude names are unqualified).
   private types = new Map<string, TypeInfo>();
   private ctors = new Map<string, CtorInfo>();
-  private fields = new Map<string, string>(); // field -> record type name
+  private values = new Map<string, Scheme>();
   private globals = new Map<string, GlobalInfo>();
+  /** Each module's own definitions. */
+  private exports = new Map<string, ModEnv>();
+  /** The module being checked, and the names visible in it (own + opened + Prelude). */
+  private mod = PRELUDE;
+  private env = new ModEnv();
+  private entry: string | undefined;
   private level = 0;
   private warnings: MossError[] = [];
   /** Type abbreviations currently being expanded (to reject cycles). */
@@ -130,7 +154,7 @@ class Checker {
         }
         return null;
       case "con": {
-        if (OPAQUE.has(t.name)) return `values of type '${t.name}'`;
+        if (OPAQUE.has(t.name)) return `values of type '${typeName(t.name)}'`;
         for (const a of t.args) {
           const r = this.incomparable(a, seen);
           if (r) return r;
@@ -146,7 +170,7 @@ class Checker {
           : [];
         for (const te of parts) {
           const r = this.incomparable(this.convert(te, vars, false), seen);
-          if (r) return `${r} (inside '${t.name}')`;
+          if (r) return `${r} (inside '${typeName(t.name)}')`;
         }
         return null;
       }
@@ -170,10 +194,14 @@ class Checker {
 
   // -- exhaustiveness ---------------------------------------------------------
 
+  /** All constructors (by qualified name) of the variant that `ctor` belongs to. */
   private readonly siblings = (ctor: string): VariantCtor[] => {
-    const def = this.types.get(this.ctors.get(ctor)!.typeName)!.def.def;
+    const typeName = this.ctors.get(ctor)!.typeName;
+    const def = this.types.get(typeName)!.def.def;
     if (def.kind !== "variant") throw new Error("not a variant");
-    return def.ctors.map((c) => ({ name: c.name, hasArg: c.arg !== null }));
+    const dot = typeName.lastIndexOf(".");
+    const m = dot < 0 ? PRELUDE : typeName.slice(0, dot);
+    return def.ctors.map((c) => ({ name: qualify(m, c.name), hasArg: c.arg !== null }));
   };
 
   /** Error if `cases` can fail to match; warn about cases that can never match. */
@@ -194,9 +222,67 @@ class Checker {
   }
 
   check(program: Program): Checked {
-    const top = new Scope(null);
-    for (const d of program.decls) this.decl(d, top);
-    return { program, globals: this.globals, ctors: this.ctors, warnings: this.warnings };
+    this.entry = program.entry;
+    this.exports.set(PRELUDE, new ModEnv());
+    for (const d of program.decls) {
+      const m = d.mod ?? program.entry ?? PRELUDE;
+      if (m !== this.mod) this.enterModule(m);
+      this.decl(d, new Scope(null));
+    }
+    return { program, exports: this.exports, globals: this.globals, ctors: this.ctors, warnings: this.warnings };
+  }
+
+  /** Start checking module `m`: it sees Prelude's names, then its own. */
+  private enterModule(m: string): void {
+    this.mod = m;
+    printContext.module = m;
+    if (!this.exports.has(m)) this.exports.set(m, new ModEnv());
+    this.env = new ModEnv();
+    if (m !== PRELUDE) this.env.addAll(this.exports.get(PRELUDE)!);
+  }
+
+  /** Record a top-level definition of the current module. */
+  private define(kind: "values" | "types" | "ctors" | "fields", name: string, target: string): void {
+    this.env[kind].set(name, target);
+    this.exports.get(this.mod)![kind].set(name, target);
+  }
+
+  /**
+   * Resolve a possibly qualified name (`x` or `M.x`) to its global name, or
+   * undefined if an unqualified name isn't visible.
+   */
+  private resolve(kind: "values" | "types" | "ctors", name: string, span: Span, what: string): string | undefined {
+    const dot = name.lastIndexOf(".");
+    if (dot < 0) return this.env[kind].get(name);
+    const m = name.slice(0, dot);
+    const short = name.slice(dot + 1);
+    const ex = this.exports.get(m);
+    if (!ex) throw new MossError(`unknown module '${m}'`, span);
+    const q = ex[kind].get(short);
+    if (!q) throw new MossError(`module '${m}' has no ${what} '${short}'`, span);
+    return q;
+  }
+
+  /** A value: local variables first, then module-level names. */
+  private lookupValue(scope: Scope, name: string, span: Span): { scheme: Scheme; resolved?: string } | undefined {
+    if (!name.includes(".")) {
+      const local = scope.get(name);
+      if (local) return { scheme: local };
+    }
+    const q = this.resolve("values", name, span, "value");
+    return q === undefined ? undefined : { scheme: this.values.get(q)!, resolved: q };
+  }
+
+  /** The record type a field belongs to: from the target's type when known, else by name. */
+  private recordFor(field: string, known: Type | undefined, span: Span): string {
+    const t = known && prune(known);
+    if (t?.k === "con") {
+      const def = this.types.get(t.name)?.def.def;
+      if (def?.kind === "record" && def.fields.some((f) => f.name === field)) return t.name;
+    }
+    const q = this.env.fields.get(field);
+    if (!q) throw new MossError(`unknown field '${field}'`, span);
+    return q;
   }
 
   // -- errors -----------------------------------------------------------------
@@ -256,22 +342,23 @@ class Checker {
           }
           return tcon(te.name, ...args);
         }
-        const info = this.types.get(te.name);
-        if (!info) throw new MossError(`unknown type '${te.name}'`, te.span);
+        const q = this.resolve("types", te.name, te.span, "type");
+        const info = q === undefined ? undefined : this.types.get(q);
+        if (!info || q === undefined) throw new MossError(`unknown type '${te.name}'`, te.span);
         if (info.params.length !== args.length) {
           throw new MossError(`type '${te.name}' expects ${info.params.length} argument(s), got ${args.length}`, te.span);
         }
         if (info.def.def.kind === "alias") {
-          if (this.expanding.has(te.name)) throw new MossError(`type abbreviation '${te.name}' is cyclic`, te.span);
-          this.expanding.add(te.name);
+          if (this.expanding.has(q)) throw new MossError(`type abbreviation '${te.name}' is cyclic`, te.span);
+          this.expanding.add(q);
           try {
             const sub = new Map<string, Type>(info.params.map((p, i) => [p, args[i]!]));
             return this.convert(info.def.def.type, sub, false);
           } finally {
-            this.expanding.delete(te.name);
+            this.expanding.delete(q);
           }
         }
-        return tcon(te.name, ...args);
+        return tcon(q, ...args);
       }
     }
   }
@@ -286,15 +373,28 @@ class Checker {
         this.level++;
         const t = this.convert(d.type, new Map(), true);
         this.level--;
-        top.set(d.name, generalize(t, this.level));
-        this.globals.set(d.name, { kind: "external", js: d.js, arity: arity(t) });
+        const q = qualify(this.mod, d.name);
+        this.values.set(q, generalize(t, this.level));
+        this.define("values", d.name, q);
+        this.globals.set(q, { kind: "external", js: d.js, arity: arity(t) });
         return;
       }
       case "let": {
         const t = this.letBinding(d.name, d.rec, d.params, d.body, d.span, top, d.component);
         this.checkComparisons();
-        top.set(d.name, t);
-        this.globals.set(d.name, { kind: "let", arity: d.params.length });
+        if (d.name === "main" && this.mod === this.entry) {
+          this.expect(d.span, instantiate(t, this.level), tcon("effect", tUnit), "'main'");
+        }
+        const q = qualify(this.mod, d.name);
+        this.values.set(q, t);
+        this.define("values", d.name, q);
+        this.globals.set(q, { kind: "let", arity: d.params.length });
+        return;
+      }
+      case "open": {
+        const ex = this.exports.get(d.name);
+        if (!ex) throw new MossError(`unknown module '${d.name}'`, d.span);
+        this.env.addAll(ex);
         return;
       }
       case "app": {
@@ -307,21 +407,25 @@ class Checker {
   }
 
   private typeDecl(d: Decl & { d: "type" }): void {
-    if (this.types.has(d.name) || BUILTIN_TYPES[d.name] !== undefined) {
+    const q = qualify(this.mod, d.name);
+    if (this.types.has(q) || BUILTIN_TYPES[d.name] !== undefined) {
       throw new MossError(`type '${d.name}' is already defined`, d.span);
     }
-    this.types.set(d.name, { params: d.params, def: d });
+    this.types.set(q, { params: d.params, def: d });
+    this.define("types", d.name, q);
     const vars = new Map<string, Type>(d.params.map((p) => [p, tvar(0)]));
     const def = d.def;
     if (def.kind === "variant") {
       def.ctors.forEach((c, index) => {
         if (c.arg) this.convert(c.arg, vars, false); // validate
-        this.ctors.set(c.name, { typeName: d.name, params: d.params, arg: c.arg, index });
+        const cq = qualify(this.mod, c.name);
+        this.ctors.set(cq, { typeName: q, params: d.params, arg: c.arg, index });
+        this.define("ctors", c.name, cq);
       });
     } else if (def.kind === "record") {
       for (const f of def.fields) {
         this.convert(f.type, vars, false);
-        this.fields.set(f.name, d.name);
+        this.define("fields", f.name, q);
       }
     } else if (def.kind === "alias") {
       this.convert(def.type, vars, false);
@@ -410,7 +514,8 @@ class Checker {
           return;
         }
         case "ctor": {
-          const { result, arg } = this.instCtor(p.name, p.span);
+          const { result, arg, resolved } = this.instCtor(p.name, p.span);
+          p.resolved = resolved;
           this.expect(p.span, result, t, "This pattern");
           if (arg && !p.arg) throw new MossError(`constructor '${p.name}' expects an argument`, p.span);
           if (!arg && p.arg) throw new MossError(`constructor '${p.name}' takes no argument`, p.span);
@@ -427,13 +532,31 @@ class Checker {
     go(p, t);
   }
 
-  private instCtor(name: string, span: Span): { result: Type; arg: Type | null } {
-    const info = this.ctors.get(name);
-    if (!info) throw new MossError(`unknown constructor '${name}'`, span);
+  private instCtor(name: string, span: Span): { result: Type; arg: Type | null; resolved: string } {
+    const q = this.resolve("ctors", name, span, "constructor");
+    const info = q === undefined ? undefined : this.ctors.get(q);
+    if (!info || q === undefined) throw new MossError(`unknown constructor '${name}'`, span);
     const vars = new Map<string, Type>(info.params.map((p) => [p, tvar(this.level)]));
     const result = tcon(info.typeName, ...info.params.map((p) => vars.get(p)!));
-    const arg = info.arg ? this.convert(info.arg, vars, false) : null;
-    return { result, arg };
+    // A constructor's argument type is written in its own module: resolve names there.
+    const arg = info.arg ? this.inModuleOf(info.typeName, () => this.convert(info.arg!, vars, false)) : null;
+    return { result, arg, resolved: q };
+  }
+
+  /** Run `f` with name resolution of the module that defines the type `q`. */
+  private inModuleOf<T>(q: string, f: () => T): T {
+    const dot = q.lastIndexOf(".");
+    const m = dot < 0 ? PRELUDE : q.slice(0, dot);
+    if (m === this.mod) return f();
+    const saved = this.env;
+    this.env = new ModEnv();
+    if (m !== PRELUDE) this.env.addAll(this.exports.get(PRELUDE)!);
+    this.env.addAll(this.exports.get(m)!);
+    try {
+      return f();
+    } finally {
+      this.env = saved;
+    }
   }
 
   private instRecord(typeName: string): { type: Type; fields: Map<string, Type> } {
@@ -441,7 +564,7 @@ class Checker {
     const vars = new Map<string, Type>(info.params.map((p) => [p, tvar(this.level)]));
     const def = info.def.def;
     if (def.kind !== "record") throw new Error("not a record");
-    const fields = new Map(def.fields.map((f) => [f.name, this.convert(f.type, vars, false)] as const));
+    const fields = this.inModuleOf(typeName, () => new Map(def.fields.map((f) => [f.name, this.convert(f.type, vars, false)] as const)));
     return { type: tcon(typeName, ...info.params.map((p) => vars.get(p)!)), fields };
   }
 
@@ -466,12 +589,14 @@ class Checker {
       case "unit":
         return tUnit;
       case "var": {
-        const s = scope.get(e.name);
-        if (!s) throw new MossError(`unbound variable '${e.name}'`, e.span);
-        return instantiate(s, this.level);
+        const found = this.lookupValue(scope, e.name, e.span);
+        if (!found) throw new MossError(`unbound variable '${e.name}'`, e.span);
+        e.resolved = found.resolved;
+        return instantiate(found.scheme, this.level);
       }
       case "ctor": {
-        const { result, arg } = this.instCtor(e.name, e.span);
+        const { result, arg, resolved } = this.instCtor(e.name, e.span);
+        e.resolved = resolved;
         if (arg && !e.arg) throw new MossError(`constructor '${e.name}' expects an argument`, e.span);
         if (!arg && e.arg) throw new MossError(`constructor '${e.name}' takes no argument`, e.span);
         if (arg && e.arg) this.expect(e.arg.span, this.infer(e.arg, scope), arg);
@@ -587,8 +712,7 @@ class Checker {
       case "record": {
         const first = e.fields[0];
         if (!first) throw new MossError("empty record", e.span);
-        const typeName = this.fields.get(first.name);
-        if (!typeName) throw new MossError(`unknown field '${first.name}'`, e.span);
+        const typeName = this.recordFor(first.name, undefined, e.span);
         const { type, fields } = this.instRecord(typeName);
         const given = new Set<string>();
         for (const f of e.fields) {
@@ -608,10 +732,10 @@ class Checker {
       case "update": {
         const first = e.fields[0];
         if (!first) throw new MossError("empty record update", e.span);
-        const typeName = this.fields.get(first.name);
-        if (!typeName) throw new MossError(`unknown field '${first.name}'`, e.span);
+        const baseTy = this.infer(e.base, scope);
+        const typeName = this.recordFor(first.name, baseTy, e.span);
         const { type, fields } = this.instRecord(typeName);
-        this.expect(e.base.span, this.infer(e.base, scope), type);
+        this.expect(e.base.span, baseTy, type);
         for (const f of e.fields) {
           const ft = fields.get(f.name);
           if (!ft) throw new MossError(`record type '${typeName}' has no field '${f.name}'`, f.value.span);
@@ -621,8 +745,7 @@ class Checker {
       }
       case "field": {
         const tt = this.infer(e.target, scope);
-        const typeName = this.fields.get(e.name);
-        if (!typeName) throw new MossError(`unknown field '${e.name}'`, e.span);
+        const typeName = this.recordFor(e.name, tt, e.span);
         const { type, fields } = this.instRecord(typeName);
         this.expect(e.target.span, tt, type);
         return fields.get(e.name)!;
@@ -695,7 +818,7 @@ class Checker {
    * the parameter type of the continuation in the operator's type.
    */
   private letStarProjects(scope: Scope, span: Span): boolean {
-    const s = scope.get("let*");
+    const s = this.lookupValue(scope, "let*", span)?.scheme;
     if (!s) throw new MossError("unbound binding operator '( let* )'", span);
     let t = prune(s.type);
     if (t.k !== "fun") return false;

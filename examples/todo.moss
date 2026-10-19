@@ -72,7 +72,7 @@ component todo_row dispatch (t : todo val) =
 let filter_link current set_filter f name =
   button [class_ (if current = f then "selected" else ""); on_click (set_filter f)] [text name]
 
-component main =
+component page =
   let* model, dispatch = state_machine initial reduce in
   let* draft, set_draft = state "" in
   let* filter, set_filter = state All in
@@ -118,4 +118,4 @@ component main =
     ]
   ]
 
-app main
+app page

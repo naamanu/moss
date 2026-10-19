@@ -1,0 +1,22 @@
+(* A plain Moss program: `moss run examples/hello/hello.moss`.
+   It uses a module from the same directory (geometry.moss) and the
+   standard library, and its entry point is `main : unit effect`. *)
+
+let shapes = [Geometry.Circle 1.0; Geometry.Rect (2.0, 3.0); Geometry.Circle 0.5]
+
+let line s = Geometry.describe s ^ ": area " ^ Float.fixed 2 (Geometry.area s)
+
+let rec fib n = if n < 2 then n else fib (n - 1) + fib (n - 2)
+
+let total = List.fold (fun acc s -> acc +. Geometry.area s) 0.0 shapes
+
+let main =
+  Effect.seq (
+    List.map (fun s -> Effect.print (line s)) shapes
+    @ [ Effect.print ("total area: " ^ Float.fixed 2 total);
+        Effect.print ("fib 20 = " ^ show (fib 20));
+        Task.attempt (Task.and_then (fun () -> Task.succeed "done waiting") (Task.sleep 100))
+          (fun r -> match r with
+            | Loaded msg -> Effect.print msg
+            | Failed e -> Effect.print ("failed: " ^ e)
+            | Loading -> Effect.none) ])

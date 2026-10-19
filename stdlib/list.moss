@@ -1,0 +1,17 @@
+(* Immutable singly linked lists. *)
+
+external map : ('a -> 'b) -> 'a list -> 'b list = "List_map"
+external mapi : (int -> 'a -> 'b) -> 'a list -> 'b list = "List_mapi"
+external filter : ('a -> bool) -> 'a list -> 'a list = "List_filter"
+external fold : ('acc -> 'a -> 'acc) -> 'acc -> 'a list -> 'acc = "List_fold"
+external length : 'a list -> int = "List_length"
+external rev : 'a list -> 'a list = "List_rev"
+external range : int -> int -> int list = "List_range"
+external concat : 'a list list -> 'a list = "List_concat"
+external concat_map : ('a -> 'b list) -> 'a list -> 'b list = "List_concat_map"
+external exists : ('a -> bool) -> 'a list -> bool = "List_exists"
+external for_all : ('a -> bool) -> 'a list -> bool = "List_for_all"
+external find : ('a -> bool) -> 'a list -> 'a option = "List_find"
+external take : int -> 'a list -> 'a list = "List_take"
+external sort : 'a list -> 'a list = "List_sort"
+external is_empty : 'a list -> bool = "List_is_empty"

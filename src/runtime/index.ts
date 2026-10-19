@@ -23,6 +23,11 @@ export interface RunOptions {
   debug?: boolean;
 }
 
+/** Run a program's `main : unit effect` (for `moss run`). */
+export function runMain(main: Eff): void {
+  main.run();
+}
+
 export function run(c: Comp<VNode>, root: HTMLElement, opts: RunOptions = {}): App {
   const view = observe(instScope(c));
   stabilize();

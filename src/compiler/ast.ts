@@ -22,7 +22,7 @@ export type Pat =
   | { p: "bool"; value: boolean; span: Span }
   | { p: "unit"; span: Span }
   | { p: "tuple"; items: Pat[]; span: Span }
-  | { p: "ctor"; name: string; arg: Pat | null; span: Span }
+  | { p: "ctor"; name: string; arg: Pat | null; span: Span; resolved?: string }
   | { p: "nil"; span: Span }
   | { p: "cons"; head: Pat; tail: Pat; span: Span }
   | { p: "annot"; pat: Pat; type: TypeExpr; span: Span };
@@ -57,8 +57,13 @@ export type Expr = Base &
     | { e: "string"; value: string }
     | { e: "bool"; value: boolean }
     | { e: "unit" }
-    | { e: "var"; name: string }
-    | { e: "ctor"; name: string; arg: Expr | null }
+    | {
+        e: "var";
+        name: string;
+        /** Qualified global name, set by the type checker for module-level references. */
+        resolved?: string;
+      }
+    | { e: "ctor"; name: string; arg: Expr | null; resolved?: string }
     | { e: "app"; fn: Expr; args: Expr[] }
     | { e: "fun"; params: Pat[]; body: Expr }
     | { e: "let"; rec: boolean; pat: Pat; params: Pat[]; value: Expr; body: Expr }
@@ -102,12 +107,24 @@ export type TypeDef =
   | { kind: "variant"; ctors: { name: string; arg: TypeExpr | null; span: Span }[] }
   | { kind: "record"; fields: { name: string; type: TypeExpr; span: Span }[] };
 
-export type Decl =
+/** Every declaration records the module it belongs to (set by the loader). */
+export type Decl = { mod?: string } & (
   | { d: "type"; name: string; params: string[]; def: TypeDef; span: Span }
   | { d: "let"; rec: boolean; name: string; params: Pat[]; body: Expr; component: boolean; span: Span }
   | { d: "external"; name: string; type: TypeExpr; js: string; span: Span }
-  | { d: "app"; expr: Expr; span: Span };
+  | { d: "open"; name: string; span: Span }
+  | { d: "app"; expr: Expr; span: Span }
+);
 
+/** All modules' declarations, in dependency order (Prelude first, the entry module last). */
 export interface Program {
   decls: Decl[];
+  /** The entry module's name. */
+  entry?: string;
 }
+
+/** The implicitly opened module whose names are global (unqualified). */
+export const PRELUDE = "Prelude";
+
+/** Global name of `name` defined in module `mod`. */
+export const qualify = (mod: string, name: string): string => (mod === PRELUDE ? name : `${mod}.${name}`);

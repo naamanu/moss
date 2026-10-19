@@ -1,0 +1,7 @@
+(* Integers (exact up to 2^53 - 1). *)
+
+external of_float : float -> int = "Int_of_float"
+external of_string : string -> int option = "Int_of_string"
+external abs : int -> int = "Int_abs"
+external min : int -> int -> int = "Int_min"
+external max : int -> int -> int = "Int_max"

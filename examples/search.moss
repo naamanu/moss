@@ -49,7 +49,7 @@ component search_panel =
     results_view k r
   ]
 
-component main =
+component page =
   let* visible, set_visible = state true in
   let* panel =
     match* visible with
@@ -66,4 +66,4 @@ component main =
     panel
   ]
 
-app main
+app page

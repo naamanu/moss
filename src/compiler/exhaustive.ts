@@ -7,6 +7,7 @@
 // appear in it. That's enough because patterns have been type-checked already.
 
 import type { Pat } from "./ast.ts";
+import { printContext } from "./types.ts";
 
 /** A normalized pattern: a wildcard or a constructor applied to sub-patterns. */
 type P = null | { head: string; args: P[] };
@@ -43,7 +44,8 @@ function norm(p: Pat): P {
     case "cons":
       return { head: "cons", args: [norm(p.head), norm(p.tail)] };
     case "ctor":
-      return { head: `C:${p.name}`, args: p.arg ? [norm(p.arg)] : [] };
+      // Constructors are identified by their resolved (module-qualified) name.
+      return { head: `C:${p.resolved ?? p.name}`, args: p.arg ? [norm(p.arg)] : [] };
   }
 }
 
@@ -144,7 +146,12 @@ function show(p: P, nested = false): string {
   if (head === "nil") return "[]";
   if (head.startsWith("bool:")) return head.slice(5);
   if (head === "cons") s = `${show(args[0]!, true)} :: ${show(args[1]!)}`;
-  else if (head.startsWith("C:")) s = args.length ? `${head.slice(2)} ${show(args[0]!, true)}` : head.slice(2);
+  else if (head.startsWith("C:")) {
+    // Print constructors of the current module without their module prefix.
+    const m = printContext.module;
+    const name = m && head.startsWith(`C:${m}.`) ? head.slice(m.length + 3) : head.slice(2);
+    s = args.length ? `${name} ${show(args[0]!, true)}` : name;
+  }
   else return head.slice(head.indexOf(":") + 1);
   return nested && args.length > 0 ? `(${s})` : s;
 }

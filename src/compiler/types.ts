@@ -169,6 +169,14 @@ export function arity(t: Type): number {
 // ---------------------------------------------------------------------------
 // Printing
 
+/** Types defined in this module print without their module prefix. */
+export const printContext = { module: "" };
+
+export const typeName = (q: string): string => {
+  const m = printContext.module;
+  return m && q.startsWith(`${m}.`) ? q.slice(m.length + 1) : q;
+};
+
 export class TypePrinter {
   private names = new Map<TVar, string>();
 
@@ -193,9 +201,10 @@ export class TypePrinter {
       case "var":
         return this.name(t);
       case "con": {
-        if (t.args.length === 0) return t.name;
-        if (t.args.length === 1) return `${this.go(t.args[0]!, 2)} ${t.name}`;
-        return `(${t.args.map((a) => this.go(a, 0)).join(", ")}) ${t.name}`;
+        const name = typeName(t.name);
+        if (t.args.length === 0) return name;
+        if (t.args.length === 1) return `${this.go(t.args[0]!, 2)} ${name}`;
+        return `(${t.args.map((a) => this.go(a, 0)).join(", ")}) ${name}`;
       }
       case "fun": {
         const s = `${this.go(t.from, 1)} -> ${this.go(t.to, 0)}`;

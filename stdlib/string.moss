@@ -1,0 +1,9 @@
+(* Strings (UTF-16, as in JavaScript). *)
+
+external length : string -> int = "String_length"
+external trim : string -> string = "String_trim"
+external is_empty : string -> bool = "String_is_empty"
+external upper : string -> string = "String_upper"
+external lower : string -> string = "String_lower"
+external contains : string -> string -> bool = "String_contains"
+external concat : string -> string list -> string = "String_concat"

@@ -1,28 +1,46 @@
+// moss run   <file.moss>             run its `main` with Node
 // moss check <file.moss>
-// moss build <file.moss> [-o dist]
+// moss build <file.moss> [-o dist]   bundle its `app` for the browser
 // moss dev   <file.moss> [--port 5173]
 
-import { existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
-import { type Binders, MossError, check, compile, formatError } from "./compiler/compile.ts";
+import { type Binders, type Loader, MossError, check, compile, fileNameOf, formatError } from "./compiler/compile.ts";
 
 const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), "runtime/index.ts");
+
+/** Modules live next to the file that uses them: `Todo_utils` -> ./todo_utils.moss */
+function fsLoader(file: string): Loader {
+  const dir = dirname(resolve(file));
+  return (m) => {
+    const path = join(dir, fileNameOf(m));
+    return existsSync(path) ? { file: join(dirname(file), fileNameOf(m)), source: readFileSync(path, "utf8") } : undefined;
+  };
+}
+
+const warn = (w: MossError) => console.warn(formatError(w, "warning"));
 
 /** Compile a .moss file and bundle it with the runtime into one browser script. */
 export async function bundle(file: string, minify = true, binders: Binders = "library"): Promise<string> {
   const src = readFileSync(file, "utf8");
   const js =
-    compile(src, file, { binders, onWarning: (w) => console.warn(formatError(w, "warning")) }) +
-    `\nR.run(main, document.getElementById("app"), { debug: /[?&]debug\\b/.test(location.search) });\n`;
+    compile(src, file, { binders, loader: fsLoader(file), onWarning: warn }) +
+    `\nR.run(app, document.getElementById("app"), { debug: /[?&]debug\\b/.test(location.search) });\n`;
+  return esbundle(js, file, { minify, platform: "browser" });
+}
+
+async function esbundle(js: string, file: string, o: { minify: boolean; platform: "browser" | "node" }): Promise<string> {
   const out = await esbuild.build({
     stdin: { contents: js, resolveDir: dirname(resolve(file)), loader: "js", sourcefile: basename(file) + ".js" },
     bundle: true,
     write: false,
     format: "esm",
-    minify,
+    minify: o.minify,
+    platform: o.platform,
     target: "es2022",
     plugins: [
       {
@@ -72,14 +90,36 @@ async function main(argv: string[]): Promise<number> {
     const i = rest.indexOf(name);
     return i >= 0 && rest[i + 1] ? rest[i + 1]! : def;
   };
-  if (!cmd || !file || !["check", "build", "dev"].includes(cmd)) {
-    console.error("usage: moss <check|build|dev> <file.moss> [-o dir] [--port n] [--builtin-binders]");
+  if (!cmd || !file || !["run", "check", "build", "dev"].includes(cmd)) {
+    console.error("usage: moss <run|check|build|dev> <file.moss> [-o dir] [--port n] [--builtin-binders]");
     return 2;
+  }
+
+  if (cmd === "run") {
+    let js: string;
+    try {
+      const src = readFileSync(file, "utf8");
+      js = compile(src, file, { binders, loader: fsLoader(file), requireApp: false, requireMain: true, onWarning: warn });
+      js = await esbundle(`${js}\nR.runMain(main);\n`, file, { minify: false, platform: "node" });
+    } catch (e) {
+      console.error(report(e));
+      return 1;
+    }
+    const dir = mkdtempSync(join(tmpdir(), "moss-run-"));
+    const out = join(dir, "main.mjs");
+    writeFileSync(out, js);
+    try {
+      await import(pathToFileURL(out).href);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // Let pending tasks (timers, fetches) finish before exiting.
+    return new Promise<number>((done) => process.once("beforeExit", () => done(0)));
   }
 
   if (cmd === "check") {
     try {
-      const { warnings } = check(readFileSync(file, "utf8"), file, binders);
+      const { warnings } = check(readFileSync(file, "utf8"), file, binders, fsLoader(file));
       for (const w of warnings) console.warn(formatError(w, "warning"));
       console.log(`${file}: ok${warnings.length ? ` (${warnings.length} warning${warnings.length > 1 ? "s" : ""})` : ""}`);
       return 0;
@@ -126,9 +166,10 @@ async function main(argv: string[]): Promise<number> {
     clearTimeout(timer);
     timer = setTimeout(rebuild, 50);
   };
-  watch(file, onChange);
-  const css = file.replace(/\.moss$/, ".css");
-  if (existsSync(css)) watch(css, onChange);
+  // Modules live next to the entry file, so watch the whole directory.
+  watch(dirname(resolve(file)), (_, name) => {
+    if (name && /\.(moss|css)$/.test(name)) onChange();
+  });
 
   const reload = `<script>new EventSource("/__events").onmessage = () => location.reload();</script>`;
   createServer((req, res) => {

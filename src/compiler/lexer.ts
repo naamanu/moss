@@ -19,7 +19,7 @@ export interface Token {
 
 const KEYWORDS = new Set([
   "let", "let*", "let+", "rec", "in", "and", "and*", "and+", "fun", "match", "match*", "with", "when", "if", "then",
-  "else", "type", "of", "component", "app", "external", "true", "false", "mod",
+  "else", "type", "of", "component", "app", "external", "open", "true", "false", "mod",
 ]);
 
 // Longest first.
@@ -103,12 +103,12 @@ export function lex(src: string, file: string): Token[] {
     if (isIdStart(c) && !(c === "_" && !isId(src[i + 1] ?? " "))) {
       while (i < src.length && isId(src[i]!)) i++;
       let text = src.slice(start, i);
-      // Qualified value: `List.map`
-      if (/^[A-Z]/.test(text) && src[i] === "." && /[a-z_]/.test(src[i + 1] ?? "")) {
+      // Qualified names: `List.map` (value or type), `Todo.Add` (constructor)
+      if (/^[A-Z]/.test(text) && src[i] === "." && /[A-Za-z_]/.test(src[i + 1] ?? "")) {
         i++;
         while (i < src.length && isId(src[i]!)) i++;
-        text = src.slice(start, i);
-        push("lident", text, start);
+        const name = src.slice(start, i);
+        push(/^[A-Z]/.test(name.slice(name.indexOf(".") + 1)) ? "uident" : "lident", name, start);
         continue;
       }
       // `let*`, `let+`, `match*`

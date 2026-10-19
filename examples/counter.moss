@@ -10,10 +10,10 @@ component counter =
   ]
 
 (* Components compose: each instance has its own state. *)
-component main =
+component page =
   let* a = counter in
   let* b = counter in
   let+ a = a and b = b in
   div [] [h1 [] [text "Two counters"]; a; b]
 
-app main
+app page

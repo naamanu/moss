@@ -8,7 +8,7 @@
 // Computation forms (`let*`, `let+`, `match*`) compile to runtime
 // combinators (R.sub, R.arr, R.sw) that build the incremental graph.
 
-import type { Decl, Expr, Pat } from "./ast.ts";
+import { type Decl, type Expr, PRELUDE, type Pat, qualify } from "./ast.ts";
 import type { Checked } from "./typecheck.ts";
 import { prune } from "./types.ts";
 
@@ -41,6 +41,9 @@ class Env {
 const PRIMITIVE = new Set(["int", "float", "string", "bool", "unit"]);
 const JS_IDENT = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
 
+/** Runtime tag of a constructor: its short name, however it was written (`Geometry.Circle` -> "Circle"). */
+const tag = (ctor: string) => ctor.slice(ctor.lastIndexOf(".") + 1);
+
 const prop = (name: string) => (JS_IDENT.test(name) ? `.${name}` : `[${JSON.stringify(name)}]`);
 const key = (name: string) => (JS_IDENT.test(name) ? name : JSON.stringify(name));
 
@@ -54,7 +57,9 @@ class Gen {
   private body: string[] = [];
   private globalNames = new Set<string>();
   private externWrappers = new Map<string, string>();
-  /** Constructor name -> {JS constant for nullary ctors, declaration index}, latest declaration wins. */
+  /** Module-level bindings by qualified name (see `Expr.resolved`). */
+  private globals = new Map<string, Binding>();
+  /** Qualified constructor name -> {JS constant for nullary ctors, declaration index}. */
   private ctorJs = new Map<string, { js: string | null; index: number }>();
 
   constructor(private readonly checked: Checked) {}
@@ -74,18 +79,26 @@ class Gen {
 
   module(runtimeImport: string): string {
     const env = new Env(null);
-    let main: string | null = null;
-    for (const d of this.checked.program.decls) {
-      const m = this.decl(d, env);
-      if (m) main = m;
+    const { decls, entry } = this.checked.program;
+    let app: string | null = null;
+    for (const d of decls) {
+      const a = this.decl(d, env);
+      if (a) app = a;
     }
+    // `main` of the entry module is the program's entry point for `moss run`.
+    const main = entry ? this.globals.get(qualify(entry, "main")) : undefined;
     return [
       `import * as R from ${JSON.stringify(runtimeImport)};`,
       ...this.header,
       ...this.body,
-      main ? `export const main = ${main};` : `export const main = undefined;`,
+      `export const app = ${app ?? "undefined"};`,
+      `export const main = ${main ? main.curried ?? main.js : "undefined"};`,
       "",
     ].join("\n");
+  }
+
+  private modOf(d: Decl): string {
+    return d.mod ?? this.checked.program.entry ?? PRELUDE;
   }
 
   // -- declarations -----------------------------------------------------------
@@ -103,25 +116,29 @@ class Gen {
               this.globalNames.add(js);
               this.header.push(`const ${js} = { $: ${JSON.stringify(c.name)}, i: ${index} };`);
             }
-            this.ctorJs.set(c.name, { js, index });
+            this.ctorJs.set(qualify(this.modOf(d), c.name), { js, index });
           });
         }
         return null;
       case "external": {
         let arity = 0;
         for (let t = d.type; t.t === "fun"; t = t.to) arity++;
-        env.set(d.name, { js: `R.${d.js}`, arity: arity > 1 ? arity : 0 });
+        this.globals.set(qualify(this.modOf(d), d.name), { js: `R.${d.js}`, arity: arity > 1 ? arity : 0 });
         return null;
       }
+      case "open":
+        return null;
       case "let": {
-        const js = this.globalName(d.name);
+        const q = qualify(this.modOf(d), d.name);
+        const js = this.globalName(q);
         if (d.params.length > 0) {
           const b: Binding = { js, arity: d.params.length };
           if (d.params.length > 1) b.curried = `${js}$c`;
-          // Only `let rec` sees itself; otherwise the name refers to any earlier binding.
-          if (d.rec) env.set(d.name, b);
-          const fn = this.fnBody(d.params, d.body, env);
-          env.set(d.name, b);
+          // `let rec` sees itself as a local name; other references resolve to the global.
+          const self = env.child();
+          if (d.rec) self.set(d.name, b);
+          const fn = this.fnBody(d.params, d.body, self);
+          this.globals.set(q, b);
           this.body.push(`function ${js}(${fn.params}) {\n${fn.body}\n}`);
           if (b.curried) this.body.push(`const ${b.curried} = ${this.curryWrapper(js, d.params.length)};`);
         } else {
@@ -129,7 +146,7 @@ class Gen {
           const st: string[] = [];
           const v = this.expr(d.body, env, st);
           this.body.push(st.length ? `const ${js} = (() => {\n${st.join("\n")}\nreturn ${v};\n})();` : `const ${js} = ${v};`);
-          env.set(d.name, { js, arity: 0 });
+          this.globals.set(q, { js, arity: 0 });
         }
         return null;
       }
@@ -137,8 +154,8 @@ class Gen {
         const st: string[] = [];
         const v = this.expr(d.expr, env, st);
         if (st.length === 0) return v;
-        this.body.push(`const $main = (() => {\n${st.join("\n")}\nreturn ${v};\n})();`);
-        return "$main";
+        this.body.push(`const $app = (() => {\n${st.join("\n")}\nreturn ${v};\n})();`);
+        return "$app";
       }
     }
   }
@@ -194,7 +211,7 @@ class Gen {
         p.items.forEach((q, i) => this.patTests(q, `${acc}[${i}]`, out));
         break;
       case "ctor":
-        out.push(`${acc}.$ === ${JSON.stringify(p.name)}`);
+        out.push(`${acc}.$ === ${JSON.stringify(tag(p.name))}`);
         if (p.arg) this.patTests(p.arg, `${acc}.v`, out);
         break;
       case "nil":
@@ -261,15 +278,15 @@ class Gen {
       case "unit":
         return "undefined";
       case "var": {
-        const b = env.get(e.name);
+        const b = e.resolved !== undefined ? this.globals.get(e.resolved) : env.get(e.name);
         if (!b) throw new Error(`codegen: unbound ${e.name}`);
         if (b.arity > 1) return b.curried ?? this.wrapperFor(b);
         return b.js;
       }
       case "ctor": {
-        const c = this.ctorJs.get(e.name)!;
+        const c = this.ctorJs.get(e.resolved ?? e.name)!;
         if (!e.arg) return c.js!;
-        return `{ $: ${JSON.stringify(e.name)}, i: ${c.index}, v: ${this.expr(e.arg, env, st)} }`;
+        return `{ $: ${JSON.stringify(tag(e.name))}, i: ${c.index}, v: ${this.expr(e.arg, env, st)} }`;
       }
       case "app":
         return this.app(e, env, st);
@@ -402,7 +419,7 @@ class Gen {
       args.unshift(...fn.args);
       fn = fn.fn;
     }
-    const b = fn.e === "var" ? env.get(fn.name) : undefined;
+    const b = fn.e === "var" ? (fn.resolved !== undefined ? this.globals.get(fn.resolved) : env.get(fn.name)) : undefined;
     const argJs = args.map((a) => this.expr(a, env, st));
     if (b && b.arity > 0) {
       if (argJs.length >= b.arity) {
