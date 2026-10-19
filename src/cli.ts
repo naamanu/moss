@@ -200,7 +200,12 @@ async function main(argv: string[]): Promise<number> {
     const path = resolve(pub, "." + decodeURIComponent(url.pathname));
     if (path.startsWith(pub + "/") && existsSync(path) && statSync(path).isFile()) {
       const ext = path.slice(path.lastIndexOf("."));
-      res.writeHead(200, { "content-type": TYPES[ext] ?? "application/octet-stream", "cache-control": "no-store" });
+      // Allow cross-origin loads (e.g. from sandboxed iframes), as static hosts like GitHub Pages do.
+      res.writeHead(200, {
+        "content-type": TYPES[ext] ?? "application/octet-stream",
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*",
+      });
       res.end(readFileSync(path));
       return;
     }
