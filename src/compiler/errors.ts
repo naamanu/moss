@@ -13,10 +13,10 @@ export class MossError extends Error {
 export const sources = new Map<string, string>();
 
 /** Render an error with the offending line and a caret underline. */
-export function formatError(e: MossError): string {
-  if (!e.span) return `error: ${e.message}`;
+export function formatError(e: MossError, severity: "error" | "warning" = "error"): string {
+  if (!e.span) return `${severity}: ${e.message}`;
   const src = sources.get(e.span.file);
-  if (src === undefined) return `${e.span.file}: error: ${e.message}`;
+  if (src === undefined) return `${e.span.file}: ${severity}: ${e.message}`;
   const before = src.slice(0, e.span.start);
   const line = before.split("\n").length;
   const lineStart = before.lastIndexOf("\n") + 1;
@@ -26,7 +26,7 @@ export function formatError(e: MossError): string {
   const width = Math.max(1, Math.min(e.span.end, lineEnd) - e.span.start);
   const gutter = String(line).length;
   return [
-    `${e.span.file}:${line}:${col + 1}: error: ${e.message}`,
+    `${e.span.file}:${line}:${col + 1}: ${severity}: ${e.message}`,
     `${" ".repeat(gutter)} |`,
     `${line} | ${src.slice(lineStart, lineEnd)}`,
     `${" ".repeat(gutter)} | ${" ".repeat(col)}${"^".repeat(width)}`,

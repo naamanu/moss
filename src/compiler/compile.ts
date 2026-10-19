@@ -12,6 +12,8 @@ export interface CompileOptions {
   runtimeImport?: string;
   /** Require an `app` declaration (true for builds, false for `check`). */
   requireApp?: boolean;
+  /** Called with each non-fatal diagnostic (e.g. unused match cases). */
+  onWarning?: (w: MossError) => void;
 }
 
 let preludeAst: Program | undefined;
@@ -29,6 +31,7 @@ export function check(src: string, file = "main.moss"): Checked {
 
 export function compile(src: string, file = "main.moss", opts: CompileOptions = {}): string {
   const checked = check(src, file);
+  for (const w of checked.warnings) opts.onWarning?.(w);
   const apps = checked.program.decls.filter((d) => d.d === "app");
   if (opts.requireApp !== false && apps.length === 0) {
     throw new MossError("no 'app' declaration: add e.g. 'app main' at the end of the file", undefined);

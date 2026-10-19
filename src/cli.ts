@@ -15,7 +15,7 @@ const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), "runtime/index.
 export async function bundle(file: string, minify = true): Promise<string> {
   const src = readFileSync(file, "utf8");
   const js =
-    compile(src, file) +
+    compile(src, file, { onWarning: (w) => console.warn(formatError(w, "warning")) }) +
     `\nR.run(main, document.getElementById("app"), { debug: /[?&]debug\\b/.test(location.search) });\n`;
   const out = await esbuild.build({
     stdin: { contents: js, resolveDir: dirname(resolve(file)), loader: "js", sourcefile: basename(file) + ".js" },
@@ -78,8 +78,9 @@ async function main(argv: string[]): Promise<number> {
 
   if (cmd === "check") {
     try {
-      check(readFileSync(file, "utf8"), file);
-      console.log(`${file}: ok`);
+      const { warnings } = check(readFileSync(file, "utf8"), file);
+      for (const w of warnings) console.warn(formatError(w, "warning"));
+      console.log(`${file}: ok${warnings.length ? ` (${warnings.length} warning${warnings.length > 1 ? "s" : ""})` : ""}`);
       return 0;
     } catch (e) {
       console.error(report(e));

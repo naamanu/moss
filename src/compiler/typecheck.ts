@@ -7,6 +7,7 @@
 
 import type { Decl, Expr, Pat, Program, TypeExpr } from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
+import { checkMatch, type VariantCtor } from "./exhaustive.ts";
 import {
   type Scheme,
   type Type,
@@ -57,6 +58,7 @@ export interface Checked {
   program: Program;
   globals: Map<string, GlobalInfo>;
   ctors: Map<string, CtorInfo>;
+  warnings: MossError[];
 }
 
 const BUILTIN_TYPES: Record<string, number> = {
@@ -98,11 +100,37 @@ class Checker {
   private fields = new Map<string, string>(); // field -> record type name
   private globals = new Map<string, GlobalInfo>();
   private level = 0;
+  private warnings: MossError[] = [];
+
+  // -- exhaustiveness ---------------------------------------------------------
+
+  private readonly siblings = (ctor: string): VariantCtor[] => {
+    const def = this.types.get(this.ctors.get(ctor)!.typeName)!.def.def;
+    if (def.kind !== "variant") throw new Error("not a variant");
+    return def.ctors.map((c) => ({ name: c.name, hasArg: c.arg !== null }));
+  };
+
+  /** Error if `cases` can fail to match; warn about cases that can never match. */
+  private checkCases(cases: { pat: Pat; guard: Expr | null }[], span: Span, what: string): void {
+    const r = checkMatch(cases.map((c) => ({ pat: c.pat, guarded: c.guard !== null })), this.siblings);
+    for (const i of r.redundant) this.warnings.push(new MossError("this case is unused: earlier cases already match every value it could", cases[i]!.pat.span));
+    if (r.missing !== null) {
+      throw new MossError(`${what} is not exhaustive; this value is not matched:\n  ${r.missing}`, span);
+    }
+  }
+
+  /** Patterns in let/fun/let+ bindings must match every value of their type. */
+  private checkIrrefutable(p: Pat): void {
+    const r = checkMatch([{ pat: p, guarded: false }], this.siblings);
+    if (r.missing !== null) {
+      throw new MossError(`this pattern can fail to match (e.g. ${r.missing}); use 'match' instead`, p.span);
+    }
+  }
 
   check(program: Program): Checked {
     const top = new Scope(null);
     for (const d of program.decls) this.decl(d, top);
-    return { program, globals: this.globals, ctors: this.ctors };
+    return { program, globals: this.globals, ctors: this.ctors, warnings: this.warnings };
   }
 
   // -- errors -----------------------------------------------------------------
@@ -249,6 +277,7 @@ class Checker {
     const pts = params.map((p) => {
       const t = tvar(this.level);
       this.bindPat(p, t, inner);
+      this.checkIrrefutable(p);
       return t;
     });
     let r = this.infer(body, inner);
@@ -397,6 +426,7 @@ class Checker {
           this.level--;
           const tmp = scope.child();
           this.bindPat(e.pat, t, tmp);
+          this.checkIrrefutable(e.pat);
           // Generalize each pattern variable.
           this.collectPatVars(e.pat).forEach((n) => inner.set(n, generalize(tmp.get(n)!.type, this.level)));
         }
@@ -420,6 +450,7 @@ class Checker {
           const t = tvar(this.level);
           this.expect(b.value.span, vt, tVal(t), "The right-hand side of 'let+'");
           this.bindPat(b.pat, t, inner);
+          this.checkIrrefutable(b.pat);
         }
         return tComp(this.infer(e.body, inner));
       }
@@ -438,6 +469,7 @@ class Checker {
           if (c.guard) this.expect(c.guard.span, this.infer(c.guard, inner), tBool, "The guard");
           this.expect(c.body.span, this.infer(c.body, inner), r);
         }
+        this.checkCases(e.cases, e.span, "This match");
         return r;
       }
       case "matchstar": {
@@ -449,6 +481,7 @@ class Checker {
           this.bindPat(c.pat, st, inner, tVal);
           this.expect(c.body.span, this.infer(c.body, inner), r, "This 'match*' case");
         }
+        this.checkCases(e.cases, e.span, "This 'match*'");
         return r;
       }
       case "tuple":

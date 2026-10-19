@@ -132,3 +132,68 @@ let eqs = ([1; 2] = [1; 2], (1, "a") <> (1, "b"), Some 3 = Some 3)
     expect([m.a, m.b, m.c]).toEqual([3, 3.5, -3]);
   });
 });
+
+describe("exhaustiveness", () => {
+  const warnings = (src: string) => check(src, "t.moss").warnings.map((w) => formatError(w, "warning"));
+  const ok = (src: string) => expect(() => check(src, "t.moss")).not.toThrow();
+  const T = "type shape = Circle of float | Rect of float * float | Empty\n";
+
+  it("reports a missing constructor with an example", () => {
+    const err = errorOf(T + "let area s = match s with Circle r -> r | Rect (w, h) -> w *. h");
+    expect(err).toContain("This match is not exhaustive");
+    expect(err).toContain("\n  Empty");
+  });
+
+  it("accepts complete matches, including nested and wildcard ones", () => {
+    ok(T + "let f s = match s with Circle _ -> 1 | Rect _ -> 2 | Empty -> 3");
+    ok(T + "let f s = match s with Empty -> 0 | _ -> 1");
+    ok("let f o = match o with (Some true, _) -> 1 | (Some false, _) -> 2 | (None, x) -> x");
+    ok("let rec len xs = match xs with [] -> 0 | _ :: t -> 1 + len t");
+    ok("let f b = match b with true -> 1 | false -> 0");
+    ok("let f u = match u with () -> 1");
+  });
+
+  it("finds missing cases in nested patterns", () => {
+    expect(errorOf("let f o = match o with Some (Some x) -> x | None -> 0")).toContain("Some None");
+    expect(errorOf("let f xs = match xs with [] -> 0 | [x] -> x")).toContain("_ :: _ :: _");
+    expect(errorOf("let f p = match p with (true, _) -> 1 | (_, false) -> 2")).toContain("(false, true)");
+  });
+
+  it("needs a catch-all for literals", () => {
+    expect(errorOf("let f n = match n with 0 -> \"zero\" | 1 -> \"one\"")).toContain("\n  2");
+    expect(errorOf("let f s = match s with \"a\" -> 1")).toContain("\n  _");
+    ok("let f n = match n with 0 -> \"zero\" | _ -> \"many\"");
+  });
+
+  it("ignores guarded cases when deciding coverage", () => {
+    expect(errorOf("let f n = match n with x when x > 0 -> 1")).toContain("not exhaustive");
+    ok("let f n = match n with x when x > 0 -> 1 | _ -> 0");
+  });
+
+  it("warns about unused cases", () => {
+    const ws = warnings(T + "let f s = match s with _ -> 0 | Empty -> 1");
+    expect(ws).toHaveLength(1);
+    expect(ws[0]).toContain("warning: this case is unused");
+    expect(warnings("let f o = match o with Some _ -> 1 | None -> 2 | Some 3 -> 3")).toHaveLength(1);
+    expect(warnings(T + "let f s = match s with Circle _ -> 1 | Rect _ -> 2 | Empty -> 3")).toHaveLength(0);
+  });
+
+  it("checks match* too", () => {
+    const err = errorOf(`
+type mode = View | Edit | Hidden
+component c (m : mode val) =
+  match* m with
+  | View -> return (const (text "v"))
+  | Edit -> return (const (text "e"))
+`);
+    expect(err).toContain("This 'match*' is not exhaustive");
+    expect(err).toContain("Hidden");
+  });
+
+  it("rejects refutable patterns in let, fun and let+", () => {
+    expect(errorOf("let f o = let (Some x) = o in x")).toContain("can fail to match (e.g. None)");
+    expect(errorOf("let f = fun [x] -> x")).toContain("can fail to match");
+    expect(errorOf("let g (Some x) = x")).toContain("can fail to match");
+    ok("let f p = let (a, (b, _)) = p in a + b");
+  });
+});

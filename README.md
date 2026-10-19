@@ -101,6 +101,11 @@ Typing is Hindley–Milner with let-polymorphism, records, variants and
 parameterized types (`'a option`, `('k, 'v) map`). Type annotations are
 optional: `(x : todo val)`.
 
+Pattern matching is checked for exhaustiveness: a `match` or `match*` that can
+miss a value is a compile error that shows an example of the missing value.
+Patterns in `let`, `fun` and `let+` must match every value of their type, and
+a case that can never be reached is a warning.
+
 Top-level declarations are `type`, `let`, `component` (a `let` whose body must
 be a `comp`), `external` (binds a JS runtime function to a type), and `app`.
 The prelude is in `src/compiler/prelude.ts`.
@@ -134,7 +139,6 @@ more than the cost of Moss itself.
 
 ## Not yet done
 
-- No exhaustiveness checking for `match`.
 - `every` timers are never cleared, even inside an inactive `match*` branch.
 - There is no IR/optimizer pass yet. Codegen works directly from the typed AST.
 - `Map.filter`/`Map.map` are O(n). An incremental-map library (like
