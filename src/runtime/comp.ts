@@ -18,6 +18,8 @@ import {
   unlink,
 } from "./incr.ts";
 import { PMap } from "./pmap.ts";
+import { eq } from "./prelude.ts";
+import { Failed, Loaded, Loading, type Remote, type Task, isAbort } from "./task.ts";
 
 export type Val<T> = Node<T>;
 
@@ -147,6 +149,93 @@ export function every(ms: number, eff: Val<Eff>): Comp<undefined> {
     if (lifecycles) lifecycles.push(n);
     else observe(n);
     return new Const(undefined);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// resource: async data keyed by a val. Whenever the key changes, the request
+// for the old key is aborted and a new one starts; responses for anything but
+// the latest request are dropped. The request is also aborted when the
+// enclosing scope (match* branch, assoc key) deactivates.
+
+interface Slot<K, A> {
+  has: boolean;
+  key: K;
+  state: Remote<A>;
+}
+
+class ResourceWatcher<K, A> extends Node<undefined> {
+  private ctrl: AbortController | undefined;
+  private gen = 0;
+  /** A request for `current` was started (and may have finished) while active. */
+  private hasCurrent = false;
+  private current: K | undefined;
+
+  constructor(readonly key: Val<K>, readonly f: (k: K) => Task<A>, readonly slot: Var<Slot<K, A>>) {
+    super();
+  }
+
+  children(): Node<any>[] {
+    return [this.key];
+  }
+
+  compute(): undefined {
+    const k = this.key.value;
+    if (!(this.hasCurrent && eq(this.current, k))) this.start(k);
+    return undefined;
+  }
+
+  private start(k: K): void {
+    this.ctrl?.abort();
+    const g = ++this.gen;
+    const ctrl = (this.ctrl = new AbortController());
+    this.current = k;
+    this.hasCurrent = true;
+    let task: Task<A>;
+    try {
+      task = this.f(k);
+    } catch (e) {
+      return this.finish(g, k, Failed(e));
+    }
+    task.run(ctrl.signal).then(
+      (v) => this.finish(g, k, Loaded(v)),
+      (e) => {
+        if (!isAbort(e)) this.finish(g, k, Failed(e));
+      },
+    );
+  }
+
+  private finish(g: number, k: K, r: Remote<A>): void {
+    if (g !== this.gen) return; // stale: a newer request (or deactivation) superseded it
+    this.ctrl = undefined;
+    frameHooks.perform(new Eff(() => this.slot.set({ has: true, key: k, state: r })));
+  }
+
+  override deactivate(): void {
+    if (this.ctrl) {
+      // Abandon the in-flight request; it restarts if we're activated again.
+      this.ctrl.abort();
+      this.ctrl = undefined;
+      this.hasCurrent = false;
+      this.gen++;
+    }
+    super.deactivate();
+  }
+
+  get inFlight(): boolean {
+    return this.ctrl !== undefined;
+  }
+}
+
+/** `resource key f`: `Loading`, then `Loaded`/`Failed` with the result of `f` on the current key. */
+export function resource<K, A>(key: Val<K>, f: (k: K) => Task<A>): Comp<Remote<A>> {
+  return comp(() => {
+    const slot = new Var<Slot<K, A>>({ has: false, key: undefined as K, state: Loading });
+    const watcher = new ResourceWatcher(key, f, slot);
+    if (lifecycles) lifecycles.push(watcher);
+    else observe(watcher);
+    // Report Loading in the same frame the key changes, not when the slot catches up.
+    return new Map2(key, slot, (k, s): Remote<A> => (s.has && eq(s.key, k) ? s.state : Loading));
   });
 }
 

@@ -2,6 +2,9 @@
    - The model lives in a state machine; actions are plain data.
    - Each row is its own component (with local "editing" state) instantiated
      per key by `assoc`, so toggling one todo recomputes one row.
+   - `assoc` runs over *all* todos and the filter is applied to the rendered
+     rows afterwards. A row's state lives as long as its key is in assoc's
+     input, so hiding a row with the filter must not remove it from that map.
    - `match*` swaps between the empty state and the list; the list keeps its
      per-row state while hidden. *)
 
@@ -55,7 +58,8 @@ component todo_row dispatch (t : todo val) =
   let* draft, set_draft = state "" in
   let+ t = t and editing = editing and set_editing = set_editing
   and draft = draft and set_draft = set_draft and dispatch = dispatch in
-  li [key (show t.id); class_ (if t.completed then "completed" else "")] [
+  (* Return the todo alongside its view so the list can filter rows. *)
+  (t, li [key (show t.id); class_ (if t.completed then "completed" else "")] [
     input [type_ "checkbox"; checked t.completed; on_check (fun _ -> dispatch (Toggle t.id))];
     (if editing then
        input [class_ "edit"; value draft; on_input set_draft;
@@ -63,7 +67,7 @@ component todo_row dispatch (t : todo val) =
      else
        label [on_dblclick (Effect.seq [set_draft t.title; set_editing true])] [text t.title]);
     button [class_ "destroy"; on_click (dispatch (Remove t.id))] [text "×"]
-  ]
+  ])
 
 let filter_link current set_filter f name =
   button [class_ (if current = f then "selected" else ""); on_click (set_filter f)] [text name]
@@ -72,17 +76,18 @@ component main =
   let* model, dispatch = state_machine initial reduce in
   let* draft, set_draft = state "" in
   let* filter, set_filter = state All in
-  let* visible =
-    let+ m = model and f = filter in
-    Map.filter (fun _ t -> shows f t) m.todos in
-  let* rows = assoc visible (fun _ t -> todo_row dispatch t) in
+  let* todos = let+ m = model in m.todos in
+  let* rows = assoc todos (fun _ t -> todo_row dispatch t) in
   let* has_todos = let+ m = model in Map.size m.todos > 0 in
   let* list =
     match* has_todos with
     | false -> return (const (p [class_ "empty"] [text "Nothing to do. Add something above."]))
     | true ->
-      let+ rows = rows in
-      ul [class_ "todo-list"] (Map.values rows) in
+      let+ rows = rows and f = filter in
+      Map.values rows
+      |> List.filter (fun (t, _) -> shows f t)
+      |> List.map snd
+      |> ul [class_ "todo-list"] in
   let+ list = list and m = model and draft = draft and set_draft = set_draft
   and dispatch = dispatch and f = filter and set_filter = set_filter in
   let left = Map.size (Map.filter (fun _ t -> not t.completed) m.todos) in

@@ -2,12 +2,14 @@
 
 import { frameHooks, instScope, type Comp } from "./comp.ts";
 import { type Eff, setFrameRequester } from "./effect.ts";
+import { setAsyncPerformer } from "./task.ts";
 import { hasPendingChanges, observe, stabilize, stats } from "./incr.ts";
 import { create, patch, patchStats, setDispatcher, type VNode } from "./vdom.ts";
 
 export * from "./comp.ts";
 export * from "./prelude.ts";
 export { Eff } from "./effect.ts";
+export * from "./task.ts";
 export { stabilize, stats } from "./incr.ts";
 export { patchStats } from "./vdom.ts";
 
@@ -65,6 +67,7 @@ export function run(c: Comp<VNode>, root: HTMLElement, opts: RunOptions = {}): A
   setFrameRequester(request);
   setDispatcher(perform);
   frameHooks.perform = perform;
+  setAsyncPerformer(perform);
 
   return {
     root,

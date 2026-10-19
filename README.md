@@ -4,9 +4,10 @@ A small, statically typed functional language for fast browser UIs, modeled on
 Jane Street's [Bonsai](https://github.com/janestreet/bonsai).
 
 An app is a **static graph of incremental computations**. State lives inside
-the graph, and each frame recomputes only the nodes whose inputs changed.
-Unchanged parts of the UI produce *the same* virtual-DOM objects, so the DOM
-diff skips them in O(1).
+the graph, and each frame recomputes only the graph nodes whose inputs
+changed. Unchanged parts of the UI produce *the same* virtual-DOM objects, so
+the DOM diff skips each of them in O(1). Some steps are still linear in the
+size of a list, though; see [Performance](#performance).
 
 ```ocaml
 component counter =
@@ -72,6 +73,7 @@ error: This expression has type int val but an expression was expected of type i
 | `assoc` | `('k, 'v) map val -> ('k -> 'v val -> 'r comp) -> ('k, 'r) map comp` |
 | `return` / `const` | `'a val -> 'a comp` / `'a -> 'a val` |
 | `every` | `int -> unit effect val -> unit comp`: a timer that runs only while its part of the app is active |
+| `resource` | `'k val -> ('k -> 'a task) -> 'a remote comp`: async data for the current key (see below) |
 
 `assoc` is the key to large lists. It instantiates one sub-graph per key, and
 it diffs its input map in O(changes · log n) because Moss maps are persistent
@@ -87,6 +89,61 @@ writes made during a frame are batched into one stabilization per
 > Bonsai. Two events that arrive before the next frame both see the
 > same (old) values. Use `state_machine`, whose actions are applied to the
 > latest model, when that matters.
+
+### Async data
+
+`resource key task` loads data for the current value of `key` and yields a
+`'a remote` val:
+
+```ocaml
+type 'a remote = Loading | Loaded of 'a | Failed of string
+
+let* results = resource query (fun q -> Http.get_text ("/search?q=" ^ q)) in
+let+ r = results in
+match r with
+| Loading -> text "Searching…"
+| Failed msg -> text ("Error: " ^ msg)
+| Loaded body -> text body
+```
+
+- **Cancellation.** When `key` changes, the request for the old key is aborted
+  (via `AbortSignal`) and a new one starts. The result switches to `Loading`
+  in the same frame.
+- **Stale responses.** A response that arrives after a newer request started
+  is dropped, even if the old task ignored the abort.
+- **Cleanup.** A resource follows the same lifetime rules as state (below).
+  Leaving its `match*` branch or removing its `assoc` key aborts the request
+  in flight. Coming back restarts it, unless it had already finished for the
+  same key, in which case the result is reused.
+- **Tasks** are inert descriptions, like effects:
+  - `Task.succeed`, `Task.fail`, `Task.map`, `Task.and_then`
+  - `Task.sleep` (cancellable)
+  - `Http.get_text` (fails on non-2xx responses)
+  - `Task.attempt task k` runs a task from an event handler (e.g. a form
+    submit) and passes its outcome to `k`. It is not cancellable.
+
+A sleep before the request debounces typing, because each keystroke cancels
+the pending sleep. `examples/search.moss` shows debouncing, out-of-order
+responses, errors and cancel-on-hide.
+
+### State lifetime
+
+Where a computation is instantiated decides how long its state lives:
+
+| where the state is | it lives while | when it goes away |
+|---|---|---|
+| top level of the app | the app runs | never |
+| a `match*` branch | the app runs; the branch is created the first time it's selected | never: an inactive branch **keeps** its state and gets it back when selected again |
+| an `assoc` entry | its key is in assoc's **input map** | the key is removed; coming back later starts from fresh state |
+
+Timers created with `every` and requests made by `resource` follow the same
+scopes. They run only while their branch is selected or their key is present.
+
+The `assoc` rule has a practical consequence. **Filter after `assoc`, not
+before it**, if hidden items should keep their state. In
+`examples/todo.moss` the filter is applied to the rendered rows, so a row
+you're editing keeps its draft when the "Active" filter hides it. Filtering
+the map before `assoc` would remove the key and discard that state.
 
 ## The language
 
@@ -116,11 +173,12 @@ The prelude is in `src/compiler/prelude.ts`.
 src/compiler/   lexer, parser (Pratt), typecheck (HM, levels), codegen (typed AST -> ES module)
 src/runtime/    incr.ts      height-ordered incremental engine with cutoffs and observers
                 pmap.ts      persistent AVL map with symmetric diff
-                comp.ts      computations: sub/arr/state/state_machine/assoc/match*/every
+                comp.ts      computations: sub/arr/state/state_machine/assoc/match*/every/resource
+                task.ts      async tasks (sleep, HTTP) with AbortSignal cancellation
                 vdom.ts      keyed virtual DOM with identity short-circuit
                 prelude.ts   builtins (List, Map, String, Html, Attr, Effect)
 src/cli.ts      check / build (esbuild bundle) / dev (live reload)
-examples/       counter, todo (TodoMVC-style), table (10k live rows)
+examples/       counter, todo (TodoMVC-style), table (10k live rows), search (async)
 ```
 
 ## Performance
@@ -137,8 +195,29 @@ The rows are CSS-grid `div`s with `content-visibility: auto`. A real `<table>`
 forced Chrome to lay out all 10k rows on every change (~60 ms), which was far
 more than the cost of Moss itself.
 
+**What scales with the change, and what doesn't.** Graph work is proportional
+to what changed: `assoc` diffs its input in O(changes · log n) and only
+recomputes changed rows. Turning the rows into DOM children is still O(n) per
+frame, in three cheap passes over all 10k rows:
+
+1. `Map.values` builds the list of row views.
+2. `el` copies that list into the vnode's children array.
+3. The DOM diff scans the children (`patchChildren` in `src/runtime/vdom.ts`).
+   Unchanged rows are skipped by identity, but every row is still visited.
+
+Each step costs a pointer comparison or an allocation per row, so it fits
+in the numbers above, but it is linear in the list size, not the change.
+Removing it needs a keyed-children vnode that holds the `assoc` output map
+directly (see below).
+
 ## Not yet done
 
+- Async is minimal. While a new key loads, a resource shows `Loading` rather
+  than keeping the previous result visible. There is no JSON decoding (only
+  `Http.get_text`), only GET requests, and `Task.attempt` can't be
+  cancelled.
 - There is no IR/optimizer pass yet. Codegen works directly from the typed AST.
+- Large lists are rendered in O(n) per frame (see Performance). A keyed
+  vnode that diffs old and new maps directly would make it O(changes · log n).
 - `Map.filter`/`Map.map` are O(n). An incremental-map library (like
   `Incr_map`) would make filtered views O(changes) too.

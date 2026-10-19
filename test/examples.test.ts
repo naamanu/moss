@@ -3,7 +3,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { compile } from "../src/compiler/compile.ts";
 import * as R from "../src/runtime/index.ts";
 
@@ -104,6 +104,23 @@ describe("todo.moss", () => {
     expect(root.querySelectorAll(".todo-list li label")[2]!.textContent).toBe("Ship it today");
   });
 
+  it("keeps a row's editing state while the filter hides it", async () => {
+    const { root, app } = await mount("todo.moss");
+    const filterBtn = (name: string) =>
+      [...root.querySelectorAll(".filters button")].find((b) => b.textContent === name)!.dispatchEvent(new Event("click"));
+    // "Write a language" is completed; start editing it, then hide it.
+    root.querySelectorAll(".todo-list li label")[0]!.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+    app.flush();
+    input(root.querySelector<HTMLInputElement>(".todo-list .edit")!, "Write a better language");
+    app.flush();
+    filterBtn("Active");
+    app.flush();
+    expect(root.querySelector(".todo-list .edit")).toBeNull();
+    filterBtn("All");
+    app.flush();
+    expect(root.querySelector<HTMLInputElement>(".todo-list .edit")?.value).toBe("Write a better language");
+  });
+
   it("shows the empty state via match* and restores the list", async () => {
     const { root, app } = await mount("todo.moss");
     for (let i = 0; i < 3; i++) {
@@ -150,5 +167,71 @@ describe("table.moss", () => {
     (row as HTMLElement).click();
     app.flush();
     expect(row.children[4]!.textContent).toMatch(/^vol \d+$/);
+  });
+});
+
+describe("search.moss", () => {
+  afterEach(() => vi.useRealTimers());
+
+  async function setup() {
+    vi.useFakeTimers();
+    const m = await mount("search.moss");
+    const q = () => m.root.querySelector<HTMLInputElement>(".query")!;
+    const status = () => m.root.querySelector(".status")?.textContent ?? null;
+    const results = () => [...m.root.querySelectorAll(".results li")].map((l) => l.textContent);
+    // Let timers and promise callbacks run, then render.
+    const wait = async (ms: number) => {
+      await vi.advanceTimersByTimeAsync(ms);
+      m.app.flush();
+    };
+    const type = (text: string) => {
+      input(q(), text);
+      m.app.flush();
+    };
+    return { ...m, q, status, results, wait, type };
+  }
+
+  it("debounces typing and shows only the latest query's results", async () => {
+    const t = await setup();
+    expect(t.status()).toBe("Type to search.");
+    t.type("a");
+    t.type("ap"); // slow answer (500ms + 200ms debounce)
+    await t.wait(150);
+    t.type("app"); // faster answer (sooner than "ap" would have been)
+    expect(t.status()).toBe('Searching for "app"…');
+    await t.wait(2000);
+    expect(t.results()).toEqual(["apple", "pineapple"]);
+    expect(t.status()).toBeNull();
+  });
+
+  it("shows failures", async () => {
+    const t = await setup();
+    t.type("error");
+    await t.wait(1000);
+    expect(t.status()).toBe("Error: the server refused that query");
+  });
+
+  it("cancels the request when the panel is hidden and resumes it when shown", async () => {
+    const t = await setup();
+    await t.wait(1);
+    const baseline = vi.getTimerCount(); // the app's own pending frame, if any
+    t.type("berry");
+    await t.wait(100);
+    const toggle = t.root.querySelector<HTMLInputElement>(".toggle input")!;
+    toggle.click(); // hide
+    t.app.flush();
+    expect(t.q()).toBeFalsy();
+    // The debounce sleep still had ~100ms left; if it weren't cleared it would
+    // still be pending here.
+    await vi.advanceTimersByTimeAsync(1);
+    const timersWhileHidden = vi.getTimerCount();
+    await t.wait(2000);
+    expect(timersWhileHidden).toBe(baseline); // the pending sleep was cleared, not left to fire
+    toggle.click(); // show again: query kept, request restarted
+    t.app.flush();
+    expect(t.q().value).toBe("berry");
+    expect(t.status()).toBe('Searching for "berry"…');
+    await t.wait(2000);
+    expect(t.results()).toEqual(["blackberry", "blueberry", "cranberry", "elderberry", "gooseberry", "mulberry", "raspberry", "strawberry"]);
   });
 });

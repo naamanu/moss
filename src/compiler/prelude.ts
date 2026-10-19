@@ -16,6 +16,24 @@ external return : 'a val -> 'a comp = "ret"
 external const : 'a -> 'a val = "cnst"
 external every : int -> unit effect val -> unit comp = "every"
 
+(* ---- async ---- *)
+type 'a task
+type 'a remote = Loading | Loaded of 'a | Failed of string
+
+(* Load data for the current key. A new key aborts the previous request,
+   stale responses are dropped, and leaving the enclosing match* branch or
+   assoc entry aborts the request in flight. *)
+external resource : 'k val -> ('k -> 'a task) -> 'a remote comp = "resource"
+
+external Task.succeed : 'a -> 'a task = "Task_succeed"
+external Task.fail : string -> 'a task = "Task_fail"
+external Task.map : ('a -> 'b) -> 'a task -> 'b task = "Task_map"
+external Task.and_then : ('a -> 'b task) -> 'a task -> 'b task = "Task_and_then"
+external Task.sleep : int -> unit task = "Task_sleep"
+(* Run a task from an event handler and report its outcome (not cancellable). *)
+external Task.attempt : 'a task -> ('a remote -> unit effect) -> unit effect = "Task_attempt"
+external Http.get_text : string -> string task = "Http_get_text"
+
 (* ---- effects ---- *)
 external Effect.none : unit effect = "Effect_none"
 external Effect.seq : unit effect list -> unit effect = "Effect_seq"

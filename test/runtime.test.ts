@@ -235,3 +235,148 @@ describe("every", () => {
     expect([counts.get(1)!.n, counts.get(2)!.n]).toEqual([2, 7]);
   });
 });
+
+describe("resource", () => {
+  afterEach(() => vi.useRealTimers());
+
+  /** Tasks whose completion the test controls; records each run's key and signal. */
+  function controlled() {
+    const runs: { key: string; signal: AbortSignal; resolve: (v: string) => void; reject: (e: unknown) => void }[] = [];
+    const f = (key: string) =>
+      new R.Task<string>(
+        (signal) =>
+          new Promise((resolve, reject) => {
+            runs.push({ key, signal, resolve, reject });
+            signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+          }),
+      );
+    return { runs, f };
+  }
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+  const show = (r: R.Remote<string>) => (r.$ === "Loaded" ? `Loaded ${r.v}` : r.$ === "Failed" ? `Failed ${r.v}` : "Loading");
+
+  it("aborts the previous request when the key changes and drops stale responses", async () => {
+    const { runs, f } = controlled();
+    const key = new Var("a");
+    const o = observe(R.instScope(R.resource(key, f)));
+    expect(show(o.value)).toBe("Loading");
+    expect(runs.map((r) => r.key)).toEqual(["a"]);
+
+    key.set("b");
+    stabilize();
+    expect(show(o.value)).toBe("Loading");
+    expect(runs[0]!.signal.aborted).toBe(true);
+    expect(runs.map((r) => r.key)).toEqual(["a", "b"]);
+
+    runs[0]!.resolve("stale A"); // ignored: superseded (and aborted)
+    runs[1]!.resolve("fresh B");
+    await settle();
+    stabilize();
+    expect(show(o.value)).toBe("Loaded fresh B");
+  });
+
+  it("drops a late response even if the old task ignores the abort signal", async () => {
+    const pending: ((v: string) => void)[] = [];
+    const f = (k: string) => new R.Task<string>(() => new Promise((res) => pending.push((v) => res(`${k}:${v}`))));
+    const key = new Var("x");
+    const o = observe(R.instScope(R.resource(key, f)));
+    key.set("y");
+    stabilize();
+    pending[1]!("1");
+    await settle();
+    stabilize();
+    pending[0]!("late");
+    await settle();
+    stabilize();
+    expect(show(o.value)).toBe("Loaded y:1");
+  });
+
+  it("reports failures, and keeps Loading until the current key answers", async () => {
+    const { runs, f } = controlled();
+    const key = new Var("a");
+    const o = observe(R.instScope(R.resource(key, f)));
+    runs[0]!.reject(new Error("boom"));
+    await settle();
+    stabilize();
+    expect(show(o.value)).toBe("Failed boom");
+    // Switching key shows Loading in the same stabilization, not the old failure.
+    key.set("b");
+    stabilize();
+    expect(show(o.value)).toBe("Loading");
+  });
+
+  it("aborts when its match* branch deactivates, restarts when reselected, and keeps finished results", async () => {
+    const { runs, f } = controlled();
+    const which = new Var<{ $: string }>({ $: "On" });
+    const key = new Var("q");
+    const c = R.sw(
+      which,
+      [(x) => (x.$ === "On" ? [] : null), (x) => (x.$ === "Off" ? [] : null)],
+      [() => R.resource(key, f), () => R.ret(R.cnst<R.Remote<string>>(R.Loading))],
+    );
+    const o = observe(R.instScope(c));
+    expect(runs.length).toBe(1);
+
+    which.set({ $: "Off" });
+    stabilize();
+    expect(runs[0]!.signal.aborted).toBe(true);
+
+    which.set({ $: "On" });
+    stabilize();
+    expect(runs.length).toBe(2); // restarted for the same key
+    runs[1]!.resolve("done");
+    await settle();
+    stabilize();
+    expect(show(o.value)).toBe("Loaded done");
+
+    which.set({ $: "Off" });
+    stabilize();
+    which.set({ $: "On" });
+    stabilize();
+    expect(runs.length).toBe(2); // finished result for the same key is reused
+    expect(show(o.value)).toBe("Loaded done");
+  });
+
+  it("aborts sleeps and cancels timers", async () => {
+    vi.useFakeTimers();
+    const ctrl = new AbortController();
+    let outcome = "pending";
+    R.Task_sleep(1000)
+      .run(ctrl.signal)
+      .then(
+        () => (outcome = "slept"),
+        (e) => (outcome = R.isAbort(e) ? "aborted" : "error"),
+      );
+    ctrl.abort();
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(outcome).toBe("aborted");
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("Http.get_text passes the signal and turns HTTP errors into failures", async () => {
+    const calls: { url: string; signal: AbortSignal }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: { signal: AbortSignal }) => {
+      calls.push({ url, signal: init.signal });
+      return url === "/ok"
+        ? { ok: true, status: 200, statusText: "OK", text: async () => "hello" }
+        : { ok: false, status: 404, statusText: "Not Found", text: async () => "" };
+    });
+    try {
+      const ctrl = new AbortController();
+      await expect(R.Http_get_text("/ok").run(ctrl.signal)).resolves.toBe("hello");
+      expect(calls[0]!.signal).toBe(ctrl.signal);
+      await expect(R.Http_get_text("/missing").run(ctrl.signal)).rejects.toThrow("HTTP 404 Not Found");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("Task.attempt reports the outcome through an effect", async () => {
+    const seen: string[] = [];
+    const k = (r: R.Remote<string>) => new R.Eff(() => void seen.push(show(r)));
+    R.Task_attempt(R.Task_map((x: number) => `n=${x}`, R.Task_succeed(1)), k).run();
+    R.Task_attempt(R.Task_fail("nope"), k).run();
+    await settle();
+    expect(seen.sort()).toEqual(["Failed nope", "Loaded n=1"]);
+  });
+});
