@@ -1,6 +1,6 @@
 // Runtime entry point imported by compiled Moss programs.
 
-import { frameHooks, type Comp } from "./comp.ts";
+import { frameHooks, instScope, type Comp } from "./comp.ts";
 import { type Eff, setFrameRequester } from "./effect.ts";
 import { hasPendingChanges, observe, stabilize, stats } from "./incr.ts";
 import { create, patch, patchStats, setDispatcher, type VNode } from "./vdom.ts";
@@ -22,7 +22,7 @@ export interface RunOptions {
 }
 
 export function run(c: Comp<VNode>, root: HTMLElement, opts: RunOptions = {}): App {
-  const view = observe(c.inst());
+  const view = observe(instScope(c));
   stabilize();
   let tree = view.value;
   let dom = create(tree, root.ownerDocument);

@@ -71,7 +71,7 @@ error: This expression has type int val but an expression was expected of type i
 | `state_machine` | `'m -> ('m -> 'act -> 'm) -> ('m * ('act -> unit effect)) comp` |
 | `assoc` | `('k, 'v) map val -> ('k -> 'v val -> 'r comp) -> ('k, 'r) map comp` |
 | `return` / `const` | `'a val -> 'a comp` / `'a -> 'a val` |
-| `every` | `int -> unit effect val -> unit comp` (a timer) |
+| `every` | `int -> unit effect val -> unit comp`: a timer that runs only while its part of the app is active |
 
 `assoc` is the key to large lists. It instantiates one sub-graph per key, and
 it diffs its input map in O(changes · log n) because Moss maps are persistent
@@ -139,7 +139,6 @@ more than the cost of Moss itself.
 
 ## Not yet done
 
-- `every` timers are never cleared, even inside an inactive `match*` branch.
 - There is no IR/optimizer pass yet. Codegen works directly from the typed AST.
 - `Map.filter`/`Map.map` are O(n). An incremental-map library (like
   `Incr_map`) would make filtered views O(changes) too.

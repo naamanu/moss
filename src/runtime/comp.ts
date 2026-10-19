@@ -75,11 +75,77 @@ export function state_machine<M, A>(init: M, reduce: (m: M) => (a: A) => M): Com
   });
 }
 
-/** `every ms eff`: run the (current) effect on an interval for as long as the app runs. */
+// ---------------------------------------------------------------------------
+// Lifecycles. Some nodes (timers) have no consumers but must run while the
+// part of the app that created them is on screen. Each dynamic boundary (the
+// app root, a match* branch, an assoc key) instantiates its computation in a
+// scope; lifecycle nodes created inside are kept alive by that scope's result,
+// so they activate and deactivate together with it.
+
+let lifecycles: Node<any>[] | null = null;
+
+/** Keeps `extra` necessary whenever `result` is. */
+class Keep<T> extends Node<T> {
+  constructor(readonly result: Node<T>, readonly extra: Node<any>[]) {
+    super();
+  }
+  children(): Node<any>[] {
+    return [this.result, ...this.extra];
+  }
+  compute(): T {
+    return this.result.value;
+  }
+  override cutoff(a: T, b: T): boolean {
+    return a === b;
+  }
+}
+
+/** Instantiate `c` as a unit whose lifecycle nodes live exactly as long as its result. */
+export function instScope<T>(c: Comp<T>): Val<T> {
+  const saved = lifecycles;
+  const mine: Node<any>[] = [];
+  lifecycles = mine;
+  try {
+    const r = c.inst();
+    return mine.length > 0 ? new Keep(r, mine) : r;
+  } finally {
+    lifecycles = saved;
+  }
+}
+
+/** Runs the current effect every `ms` while active; the interval is cleared on deactivation. */
+class EveryNode extends Node<undefined> {
+  private timer: ReturnType<typeof setInterval> | undefined;
+  constructor(readonly ms: number, readonly eff: Val<Eff>) {
+    super();
+  }
+  children(): Node<any>[] {
+    return [this.eff];
+  }
+  compute(): undefined {
+    return undefined;
+  }
+  override activate(): void {
+    super.activate();
+    this.timer = setInterval(() => frameHooks.perform(this.eff.value), this.ms);
+  }
+  override deactivate(): void {
+    clearInterval(this.timer);
+    this.timer = undefined;
+    super.deactivate();
+  }
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+}
+
+/** `every ms eff`: run the (current) effect on an interval while this part of the app is active. */
 export function every(ms: number, eff: Val<Eff>): Comp<undefined> {
   return comp(() => {
-    const o = observe(eff);
-    setInterval(() => frameHooks.perform(o.value), ms);
+    const n = new EveryNode(ms, eff);
+    // Outside any scope (instantiated by hand), keep the timer for good.
+    if (lifecycles) lifecycles.push(n);
+    else observe(n);
     return new Const(undefined);
   });
 }
@@ -155,7 +221,7 @@ class AssocIn<K, V, R> extends Node<PMap<K, V>> {
       }
     });
     this.instances = insts;
-    for (const inst of added) inst.out = this.make(inst.key, inst.input).inst();
+    for (const inst of added) inst.out = instScope(this.make(inst.key, inst.input));
     if (added.length > 0 || removed.length > 0) this.out.applyStructural(added, removed);
     return cur;
   }
@@ -282,7 +348,7 @@ export function sw<T>(v: Val<any>, matchers: Matcher[], branches: ((binds: Val<a
             return r === null ? this.value : r[j];
           }));
         }
-        n = cache[i] = branches[i]!(binds).inst();
+        n = cache[i] = instScope(branches[i]!(binds));
       }
       return n;
     });

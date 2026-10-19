@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import * as R from "../src/runtime/index.ts";
 import { Map1, Map2, Var, observe, stabilize, stats } from "../src/runtime/incr.ts";
 import { PMap, compare } from "../src/runtime/pmap.ts";
@@ -184,5 +184,54 @@ describe("computations", () => {
     which.set({ $: "A" });
     stabilize();
     expect(o.value).toMatchObject({ label: "A", n: 5 });
+  });
+});
+
+describe("every", () => {
+  afterEach(() => vi.useRealTimers());
+
+  // A computation that ticks `count` every 10ms while it's active.
+  const ticker = (count: { n: number }) =>
+    R.sub(R.every(10, R.cnst(new R.Eff(() => void count.n++))), () => R.ret(R.cnst("ticking")));
+
+  it("stops while its match* branch is inactive and resumes when it's selected again", () => {
+    vi.useFakeTimers();
+    const count = { n: 0 };
+    const which = new Var<{ $: string }>({ $: "On" });
+    const c = R.sw(
+      which,
+      [(x) => (x.$ === "On" ? [] : null), (x) => (x.$ === "Off" ? [] : null)],
+      [() => ticker(count), () => R.ret(R.cnst("idle"))],
+    );
+    const root = document.createElement("div");
+    const app = R.run(R.sub(c, (v) => R.arr([v], (s: string) => R.Html_text(s))), root);
+    vi.advanceTimersByTime(55);
+    expect(count.n).toBe(5);
+
+    which.set({ $: "Off" });
+    app.flush();
+    expect(root.textContent).toBe("idle");
+    vi.advanceTimersByTime(100);
+    expect(count.n).toBe(5); // timer cleared
+
+    which.set({ $: "On" });
+    app.flush();
+    vi.advanceTimersByTime(30);
+    expect(count.n).toBe(8); // restarted
+  });
+
+  it("stops when its assoc key is removed", () => {
+    vi.useFakeTimers();
+    const counts = new Map<number, { n: number }>([[1, { n: 0 }], [2, { n: 0 }]]);
+    const input = new Var((R.Map_empty as PMap<number, number>).set(1, 1).set(2, 2));
+    const rows = R.assoc(input, (k: number) => () => ticker(counts.get(k)!));
+    observe(R.instScope(rows));
+    vi.advanceTimersByTime(25);
+    expect([counts.get(1)!.n, counts.get(2)!.n]).toEqual([2, 2]);
+
+    input.set(input.latest().delete(1));
+    stabilize();
+    vi.advanceTimersByTime(50);
+    expect([counts.get(1)!.n, counts.get(2)!.n]).toEqual([2, 7]);
   });
 });
