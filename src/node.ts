@@ -43,6 +43,11 @@ function readManifest(dir: string): Manifest {
   }
 }
 
+/** The directory of the nearest moss.json above `file`, or `file`'s own directory. */
+export function projectRoot(file: string): string {
+  return findProjectDir(file) ?? dirname(resolve(file));
+}
+
 function findProjectDir(file: string): string | undefined {
   for (let dir = dirname(resolve(file)); ; dir = dirname(dir)) {
     if (existsSync(join(dir, "moss.json"))) return dir;

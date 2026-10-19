@@ -2,15 +2,18 @@
 // moss check <file.moss>
 // moss build <file.moss> [-o dist]   bundle it for the browser (main starts the app)
 // moss dev   <file.moss> [--port 5173]
+//
+// build and dev also publish the project's `public/` directory (next to its
+// moss.json) as static files: dev serves them, build copies them.
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, watch, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, watch, writeFileSync } from "node:fs";
 import { createServer, type ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as esbuild from "esbuild";
 import { MossError, check, compile, formatError } from "./compiler/compile.ts";
-import { projectLoader, runtimeExports } from "./node.ts";
+import { projectLoader, projectRoot, runtimeExports } from "./node.ts";
 
 const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), "runtime/index.ts");
 
@@ -130,6 +133,8 @@ async function main(argv: string[]): Promise<number> {
       mkdirSync(out, { recursive: true });
       writeFileSync(join(out, "app.js"), js);
       writeFileSync(join(out, "index.html"), html(basename(file, ".moss"), cssFor(file)));
+      const pub = join(projectRoot(file), "public");
+      if (existsSync(pub)) cpSync(pub, out, { recursive: true });
       console.log(`wrote ${join(out, "index.html")} and ${join(out, "app.js")} (${(js.length / 1024).toFixed(1)} KiB)`);
       return 0;
     } catch (e) {
@@ -160,10 +165,13 @@ async function main(argv: string[]): Promise<number> {
     clearTimeout(timer);
     timer = setTimeout(rebuild, 50);
   };
-  // Modules live next to the entry file, so watch the whole directory.
-  watch(dirname(resolve(file)), (_, name) => {
-    if (name && /\.(moss|css)$/.test(name)) onChange();
+  // Watch the whole project: modules, styles, and its JS runtime.
+  const root = projectRoot(file);
+  watch(root, { recursive: true }, (_, name) => {
+    if (name && /\.(moss|css|ts)$/.test(name) && !/(^|[\\/])(node_modules|dist|public)[\\/]/.test(name)) onChange();
   });
+  const pub = resolve(root, "public");
+  const TYPES: Record<string, string> = { ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".html": "text/html; charset=utf-8" };
 
   const reload = `<script>new EventSource("/__events").onmessage = () => location.reload();</script>`;
   createServer((req, res) => {
@@ -186,6 +194,14 @@ async function main(argv: string[]): Promise<number> {
         const esc = error.replace(/&/g, "&amp;").replace(/</g, "&lt;");
         res.end(`<!doctype html><title>moss: error</title><pre style="padding:16px;color:#b00;font:14px/1.4 ui-monospace,monospace">${esc}</pre>${reload}`);
       } else res.end(html(basename(file, ".moss"), cssFor(file), reload));
+      return;
+    }
+    // Static files from public/ (never outside it).
+    const path = resolve(pub, "." + decodeURIComponent(url.pathname));
+    if (path.startsWith(pub + "/") && existsSync(path) && statSync(path).isFile()) {
+      const ext = path.slice(path.lastIndexOf("."));
+      res.writeHead(200, { "content-type": TYPES[ext] ?? "application/octet-stream", "cache-control": "no-store" });
+      res.end(readFileSync(path));
       return;
     }
     res.writeHead(404).end("not found");
