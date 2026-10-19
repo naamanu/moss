@@ -17,7 +17,7 @@ let main =
   Effect.seq (List.map (fun s -> Effect.print (Float.fixed 2 (area s))) [Circle 1.0; Rect (2.0, 3.0)])
 ```
 
-[Rhizoid](rhizoid/README.md) is a library for incremental browser UIs written
+[Rhizoid](https://github.com/naamanu/rhizoid) is a library for incremental browser UIs written
 for Moss, in the style of Jane Street's Bonsai.
 
 ## Quick start
@@ -26,8 +26,6 @@ for Moss, in the style of Jane Street's Bonsai.
 npm install
 node bin/moss.js run examples/hello/hello.moss      # run a program's `main` with Node
 node bin/moss.js check examples/hello/hello.moss    # type-check only
-node bin/moss.js dev rhizoid/examples/todo.moss     # a Rhizoid app, with live reload
-node bin/moss.js build rhizoid/examples/todo.moss -o dist/todo
 npm test
 ```
 
@@ -74,8 +72,9 @@ let main =
                Effect.print (Geometry.describe (Geometry.Circle 1.0)) ]
 ```
 
-`moss build` and `moss dev` bundle a program for the browser instead. A
-[Rhizoid](rhizoid/README.md) app is a program whose `main` mounts the UI:
+`moss build` and `moss dev` bundle a program for the browser instead
+(`dev` serves it with live reload). A
+[Rhizoid](https://github.com/naamanu/rhizoid) app is a program whose `main` mounts the UI:
 `let main = start page`.
 
 ### Packages
@@ -111,7 +110,7 @@ let* p = c in body                  (* ( let* ) c (fun p -> body) *)
 let* p1 = c1 and* p2 = c2 in body   (* let* (p1, p2) = ( and* ) c1 c2 in body *)
 ```
 
-Libraries define them: [Rhizoid](rhizoid/README.md) defines them for
+Libraries define them: [Rhizoid](https://github.com/naamanu/rhizoid) defines them for
 incremental UIs. Any code can define its own, for example an option monad:
 
 ```ocaml
@@ -202,7 +201,6 @@ src/node.ts     moss.json projects and packages for the CLI
 src/cli.ts      run / check / build (esbuild bundle) / dev (live reload)
 stdlib/         the standard library (Prelude, List, Map, String, ...), embedded into the compiler
 examples/       hello/: a plain multi-module program
-rhizoid/        the Rhizoid UI library (its own package; see rhizoid/README.md)
 ```
 
 ## Not yet done

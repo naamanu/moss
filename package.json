@@ -1,13 +1,16 @@
 {
-  "name": "moss",
+  "name": "mosslang",
   "version": "0.1.0",
-  "description": "A small functional language for fast, incremental browser UIs (Bonsai-inspired)",
+  "description": "Moss: a small statically typed functional language (ML family) that compiles to JavaScript",
   "type": "module",
   "bin": {
     "moss": "./bin/moss.js"
   },
   "exports": {
-    "./runtime": "./src/runtime/index.ts"
+    "./compiler": "./src/compiler/compile.ts",
+    "./node": "./src/node.ts",
+    "./runtime": "./src/runtime/index.ts",
+    "./runtime/*": "./src/runtime/*"
   },
   "scripts": {
     "gen-stdlib": "node scripts/gen-stdlib.mjs",
@@ -19,12 +22,12 @@
   "engines": {
     "node": ">=22"
   },
-  "devDependencies": {
-    "@types/jsdom": "^21.1.7",
-    "@types/node": "^22.10.2",
+  "dependencies": {
     "esbuild": "^0.24.0",
-    "jsdom": "^25.0.1",
-    "tsx": "^4.19.2",
+    "tsx": "^4.19.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
     "typescript": "^5.6.3",
     "vitest": "^2.1.8"
   }
