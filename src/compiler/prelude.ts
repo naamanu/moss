@@ -8,6 +8,13 @@ type 'a effect
 type ('k, 'v) map
 type 'a option = None | Some of 'a
 
+(* ---- binding operators (move to the Rhizoid library in step 3) ---- *)
+external ( let* ) : 'a comp -> ('a val -> 'b comp) -> 'b comp = "let_star"
+external ( let+ ) : 'a val -> ('a -> 'b) -> 'b comp = "let_plus"
+external ( and+ ) : 'a val -> 'b val -> ('a * 'b) val = "and_plus"
+external ( and* ) : 'a comp -> 'b comp -> ('a * 'b) comp = "and_star"
+external ( match* ) : 'a val -> ('a -> int) -> (int -> 'a val -> 'r comp) -> 'r comp = "match_star"
+
 (* ---- computations ---- *)
 external state : 'a -> ('a * ('a -> unit effect)) comp = "state"
 external state_machine : 'm -> ('m -> 'act -> 'm) -> ('m * ('act -> unit effect)) comp = "state_machine"

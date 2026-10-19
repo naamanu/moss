@@ -18,7 +18,7 @@ export interface Token {
 }
 
 const KEYWORDS = new Set([
-  "let", "let*", "let+", "rec", "in", "and", "fun", "match", "match*", "with", "when", "if", "then",
+  "let", "let*", "let+", "rec", "in", "and", "and*", "and+", "fun", "match", "match*", "with", "when", "if", "then",
   "else", "type", "of", "component", "app", "external", "true", "false", "mod",
 ]);
 
@@ -112,7 +112,11 @@ export function lex(src: string, file: string): Token[] {
         continue;
       }
       // `let*`, `let+`, `match*`
-      if ((text === "let" || text === "match") && (src[i] === "*" || (text === "let" && src[i] === "+"))) {
+      // Binding operators: `let*`, `let+`, `and*`, `and+`, `match*`
+      if (
+        (text === "let" || text === "and" || text === "match") &&
+        (src[i] === "*" || (text !== "match" && src[i] === "+"))
+      ) {
         text += src[i++];
       }
       if (KEYWORDS.has(text)) push("kw", text, start);

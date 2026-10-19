@@ -23,6 +23,51 @@ import { Failed, Loaded, Loading, type Remote, type Task, isAbort } from "./task
 
 export type Val<T> = Node<T>;
 
+/**
+ * A product of vals built by `and+`. It isn't a node: `let+` over a product
+ * flattens it into one map node over all the leaves (like Bonsai's map3...),
+ * and any other consumer materializes it once with `toNode`.
+ */
+export class Both {
+  node: Node<any> | undefined;
+  constructor(readonly a: ValLike<any>, readonly b: ValLike<any>) {}
+}
+
+/** What Moss code may pass wherever an `'a val` is expected. */
+export type ValLike<T> = Node<T> | Both;
+
+function leaves(v: ValLike<any>, out: Node<any>[] = []): Node<any>[] {
+  if (v instanceof Both) {
+    leaves(v.a, out);
+    leaves(v.b, out);
+  } else out.push(v);
+  return out;
+}
+
+/** Rebuilds the nested pairs of a product from its flattened leaf values. */
+function reshaper(v: ValLike<any>): (xs: any[]) => any {
+  let i = 0;
+  const go = (v: ValLike<any>): ((xs: any[]) => any) => {
+    if (!(v instanceof Both)) {
+      const k = i++;
+      return (xs) => xs[k];
+    }
+    const a = go(v.a);
+    const b = go(v.b);
+    return (xs) => [a(xs), b(xs)];
+  };
+  return go(v);
+}
+
+export function toNode<T>(v: ValLike<T>): Node<T> {
+  if (!(v instanceof Both)) return v;
+  if (v.node === undefined) {
+    const build = reshaper(v);
+    v.node = new MapN(leaves(v), (...xs) => build(xs));
+  }
+  return v.node as Node<T>;
+}
+
 export interface Comp<T> {
   inst(): Val<T>;
 }
@@ -30,8 +75,8 @@ export interface Comp<T> {
 const comp = <T>(inst: () => Val<T>): Comp<T> => ({ inst });
 
 /** `return v`: a computation that just yields an existing value. */
-export function ret<T>(v: Val<T>): Comp<T> {
-  return comp(() => v);
+export function ret<T>(v: ValLike<T>): Comp<T> {
+  return comp(() => toNode(v));
 }
 
 export function cnst<T>(x: T): Val<T> {
@@ -44,7 +89,8 @@ export function sub<A, T>(c: Comp<A>, body: (x: Val<A>) => Comp<T>): Comp<T> {
 }
 
 /** `let+ x = a and y = b in f x y`: one map node over the inputs. */
-export function arr<T>(inputs: Val<any>[], f: (...xs: any[]) => T): Comp<T> {
+export function arr<T>(vals: ValLike<any>[], f: (...xs: any[]) => T): Comp<T> {
+  const inputs = vals.map(toNode);
   switch (inputs.length) {
     case 1:
       return comp(() => new Map1(inputs[0]!, f));
@@ -56,8 +102,8 @@ export function arr<T>(inputs: Val<any>[], f: (...xs: any[]) => T): Comp<T> {
 }
 
 /** Projection of a tuple component; cuts off when the component is unchanged. */
-export function proj<T>(v: Val<any[]>, i: number): Val<T> {
-  return new Proj(v, (t) => t[i]);
+export function proj<T>(v: ValLike<any[]>, i: number): Val<T> {
+  return new Proj(toNode(v), (t) => t[i]);
 }
 
 export function state<T>(init: T): Comp<[T, (v: T) => Eff<void>]> {
@@ -142,9 +188,9 @@ class EveryNode extends Node<undefined> {
 }
 
 /** `every ms eff`: run the (current) effect on an interval while this part of the app is active. */
-export function every(ms: number, eff: Val<Eff>): Comp<undefined> {
+export function every(ms: number, eff: ValLike<Eff>): Comp<undefined> {
   return comp(() => {
-    const n = new EveryNode(ms, eff);
+    const n = new EveryNode(ms, toNode(eff));
     // Outside any scope (instantiated by hand), keep the timer for good.
     if (lifecycles) lifecycles.push(n);
     else observe(n);
@@ -228,8 +274,9 @@ class ResourceWatcher<K, A> extends Node<undefined> {
 }
 
 /** `resource key f`: `Loading`, then `Loaded`/`Failed` with the result of `f` on the current key. */
-export function resource<K, A>(key: Val<K>, f: (k: K) => Task<A>): Comp<Remote<A>> {
+export function resource<K, A>(keyVal: ValLike<K>, f: (k: K) => Task<A>): Comp<Remote<A>> {
   return comp(() => {
+    const key = toNode(keyVal);
     const slot = new Var<Slot<K, A>>({ has: false, key: undefined as K, state: Loading });
     const watcher = new ResourceWatcher(key, f, slot);
     if (lifecycles) lifecycles.push(watcher);
@@ -407,8 +454,8 @@ class AssocOut<K, V, R> extends Node<PMap<K, R>> {
   }
 }
 
-export function assoc<K, V, R>(input: Val<PMap<K, V>>, f: (k: K) => (v: Val<V>) => Comp<R>): Comp<PMap<K, R>> {
-  return comp(() => new AssocOut(new AssocIn(input, (k, v) => f(k)(v))));
+export function assoc<K, V, R>(input: ValLike<PMap<K, V>>, f: (k: K) => (v: Val<V>) => Comp<R>): Comp<PMap<K, R>> {
+  return comp(() => new AssocOut(new AssocIn(toNode(input), (k, v) => f(k)(v))));
 }
 
 // ---------------------------------------------------------------------------
@@ -417,8 +464,9 @@ export function assoc<K, V, R>(input: Val<PMap<K, V>>, f: (k: K) => (v: Val<V>) 
 
 export type Matcher = (x: any) => any[] | null;
 
-export function sw<T>(v: Val<any>, matchers: Matcher[], branches: ((binds: Val<any>[]) => Comp<T>)[]): Comp<T> {
+export function sw<T>(scrut: ValLike<any>, matchers: Matcher[], branches: ((binds: Val<any>[]) => Comp<T>)[]): Comp<T> {
   return comp(() => {
+    const v = toNode(scrut);
     const which = new Map1(v, (x) => {
       for (let i = 0; i < matchers.length; i++) if (matchers[i]!(x) !== null) return i;
       throw new Error("match*: no case matched");
@@ -444,3 +492,60 @@ export function sw<T>(v: Val<any>, matchers: Matcher[], branches: ((binds: Val<a
   });
 }
 
+
+// ---------------------------------------------------------------------------
+// Binding operators for Moss (`let*`, `let+`, `and+`, `and*`, `match*`).
+// Callbacks are Moss closures, so they're called curried.
+
+/** `( let* )`: instantiate a computation and continue with its value. */
+export function let_star<A, T>(c: Comp<A>, body: (x: Val<A>) => Comp<T>): Comp<T> {
+  return sub(c, body);
+}
+
+/** `( let+ )`: one map node over a val, or over all the leaves of an `and+` product. */
+export function let_plus<A, T>(v: ValLike<A>, f: (a: A) => T): Comp<T> {
+  if (v instanceof Both) {
+    const inputs = leaves(v);
+    const build = reshaper(v);
+    return comp(() => new MapN(inputs, (...xs) => f(build(xs))));
+  }
+  return comp(() => new Map1(v, f));
+}
+
+/** `( and+ )`: pair two vals (lazily; see `Both`). */
+export function and_plus(a: ValLike<any>, b: ValLike<any>): Both {
+  return new Both(a, b);
+}
+
+/** `( and* )`: instantiate two computations and pair their values. */
+export function and_star<A, B>(a: Comp<A>, b: Comp<B>): Comp<[A, B]> {
+  return comp(() => toNode(new Both(a.inst(), b.inst())));
+}
+
+/**
+ * `( match* )`: switch between computations on `index(v)`. Branch `i` is
+ * instantiated once, the first time it's selected, and receives a view of `v`
+ * that only updates while `index(v) = i`, so its pattern projections never
+ * see another case's value. Inactive branches keep their state.
+ */
+export function match_star<A, T>(
+  scrut: ValLike<A>,
+  index: (a: A) => number,
+  branch: (i: number) => (view: Val<A>) => Comp<T>,
+): Comp<T> {
+  return comp(() => {
+    const v = toNode(scrut);
+    const which = new Map1(v, index);
+    const cache: Val<T>[] = [];
+    return new Bind(which, (i) => {
+      let n = cache[i];
+      if (n === undefined) {
+        const view = new Proj(v, function (this: Proj<A, A>, x) {
+          return index(x) === i ? x : this.value;
+        });
+        n = cache[i] = instScope(branch(i)(view));
+      }
+      return n;
+    });
+  });
+}

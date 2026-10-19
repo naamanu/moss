@@ -298,3 +298,54 @@ let rec_lt = { a = 2; b = 1 } < { a = 1; b = 2 }`,
     }
   });
 });
+
+describe("binding operators", () => {
+  async function evalMoss(src: string, names: string[]): Promise<any[]> {
+    const R = await import("../src/runtime/index.ts");
+    const js = compile(`${src}\napp (return (const (text "")))`, "t.moss");
+    const body = js.replace(/^import .*$/m, "").replace(/^export const main = .*$/m, "");
+    return new Function("R", `${body}\nreturn [${names.map((n) => `$${n}`).join(", ")}];`)(R);
+  }
+
+  it("lets user code define let*/and*/let+/and+ (an option monad)", async () => {
+    const [r1, r2, prod, ap] = await evalMoss(
+      `
+let ( let* ) o f = match o with Some x -> f x | None -> None
+let ( and* ) a b = match (a, b) with (Some x, Some y) -> Some (x, y) | _ -> None
+let ( let+ ) o f = match o with Some x -> Some (f x) | None -> None
+let ( and+ ) a b = ( and* ) a b
+let sum a b = let* x = a and* y = b in Some (x + y)
+let r1 = sum (Some 1) (Some 2)
+let r2 = sum (Some 1) None
+let prod = let+ x = Some 4 and+ y = Some 5 and+ z = Some 2 in x * y * z
+let ap = ( let+ ) (Some 20) (fun x -> x + 1)
+`,
+      ["r1", "r2", "prod", "ap"],
+    );
+    expect(r1).toMatchObject({ $: "Some", v: 3 });
+    expect(r2).toMatchObject({ $: "None" });
+    expect(prod).toMatchObject({ $: "Some", v: 40 });
+    expect(ap).toMatchObject({ $: "Some", v: 21 });
+  });
+
+  it("types and* over computations", () => {
+    expect(
+      typeOf(
+        "let c = let* a = state 1 and* b = state \"x\" in let+ (n, _) = a and+ (s, _) = b in show n ^ s",
+        "c",
+      ),
+    ).toBe("string comp");
+  });
+
+  it("reports match* diagnostics once, under its own name", () => {
+    expect(errorOf("type m = A | B | C\nlet f (v : m val) = match* v with A -> return (const 1) | B -> return (const 2)")).toContain(
+      "This 'match*' is not exhaustive",
+    );
+    const ws = check("type m = A | B\nlet f (v : m val) = match* v with _ -> return (const 1) | A -> return (const 2)", "t.moss").warnings;
+    expect(ws).toHaveLength(1);
+  });
+
+  it("the builtin binders reject and*", () => {
+    expect(() => check("let c = let* a = state 1 and* b = state 2 in return a", "t.moss", "builtin")).toThrow("and*");
+  });
+});

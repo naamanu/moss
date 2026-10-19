@@ -153,6 +153,44 @@ The syntax is ML-style: `let`/`let rec`/`in`, `fun x -> e`, `match ... with`,
 `type t = A | B of int * string`. Integers and floats use separate operators
 (`+` vs `+.`), as in OCaml. `^` concatenates strings.
 
+### Binding operators
+
+`let*`, `let+`, `and*`, `and+` and `match*` are not built into the compiler.
+They call whatever `( let* )`, `( let+ )`, `( and* )`, `( and+ )` and
+`( match* )` are in scope, as in OCaml (4.08 and later):
+
+```ocaml
+let+ p1 = e1 and+ p2 = e2 in body   (* ( let+ ) (( and+ ) e1 e2) (fun (p1, p2) -> body) *)
+let* p = c in body                  (* ( let* ) c (fun p -> body) *)
+let* p1 = c1 and* p2 = c2 in body   (* let* (p1, p2) = ( and* ) c1 c2 in body *)
+```
+
+The prelude defines them for vals and computations; they'll move into the
+Rhizoid library. Any code can define its own, for example an option monad:
+
+```ocaml
+let ( let* ) o f = match o with Some x -> f x | None -> None
+let ( and* ) a b = match (a, b) with (Some x, Some y) -> Some (x, y) | _ -> None
+let sum a b = let* x = a and* y = b in Some (x + y)
+```
+
+Two forms do more than a single call:
+
+- **A tuple pattern on `let*`** depends on what the in-scope `( let* )`
+  passes to its continuation. If it's the plain value (a monad,
+  `'a m -> ('a -> 'b m) -> 'b m`), the tuple is matched, as in OCaml. If it's
+  a wrapped value, like a computation's `'a val`, each variable is projected
+  out with `let+`, which is what Bonsai's `let%sub` does.
+- **`match* v with ...`** becomes a call to `( match* ) v index branch`.
+  `index` maps a value to its case number. `branch i view` builds case `i`,
+  and its pattern variables are projected out of `view` with `let+`.
+
+A chain of `and+` doesn't create intermediate nodes: `let+` over it compiles
+to a single map node over all the inputs. `moss check`/`build`/`dev` accept
+`--builtin-binders` to use the compiler's previous built-in rules instead.
+That option exists only to check that both paths behave the same; the tests
+run every example both ways.
+
 ### Values and their semantics
 
 - **Integers** are JavaScript numbers, exact up to 2^53 − 1. A larger

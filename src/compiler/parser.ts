@@ -1,4 +1,4 @@
-import type { Case, Decl, Expr, LetPlusBind, Pat, Program, TypeDef, TypeExpr } from "./ast.ts";
+import { BINDING_OPS, type Case, type Decl, type Expr, type LetPlusBind, type Pat, type Program, type TypeDef, type TypeExpr } from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
 import { lex, type Token } from "./lexer.ts";
 
@@ -82,7 +82,7 @@ class Parser {
     const start = this.tok.span;
     if (this.eat("type")) return this.typeDecl(start);
     if (this.eat("external")) {
-      const name = this.expectKind("lident", "a name").text;
+      const name = this.valueName("a name").text;
       this.expect(":");
       const type = this.type();
       this.expect("=");
@@ -97,7 +97,7 @@ class Parser {
     if (component || this.is("let")) {
       this.i++;
       const rec = this.eat("rec");
-      const name = this.expectKind("lident", "a name").text;
+      const name = this.valueName("a name").text;
       const params: Pat[] = [];
       while (!this.is("=")) params.push(this.patAtom());
       if (rec && params.length === 0) this.fail("'let rec' must define a function", start);
@@ -346,7 +346,11 @@ class Parser {
     let pat: Pat;
     const params: Pat[] = [];
     const t = this.tok;
-    if (t.kind === "lident" && !this.peekIs(",") && !this.peekIs("::")) {
+    if (this.isOpName()) {
+      const n = this.valueName("a name");
+      pat = { p: "var", name: n.text, span: n.span };
+      while (!this.is("=")) params.push(this.patAtom());
+    } else if (t.kind === "lident" && !this.peekIs(",") && !this.peekIs("::")) {
       this.i++;
       pat = { p: "var", name: t.text, span: t.span };
       while (!this.is("=")) params.push(this.patAtom());
@@ -361,6 +365,23 @@ class Parser {
     return { e: "let", rec, pat, params, value, body, span: this.from(start) };
   }
 
+  /** `( let* )`, `( let+ )`, ... used as an ordinary name. */
+  private isOpName(): boolean {
+    const next = this.peek();
+    return this.is("(") && next.kind === "kw" && (BINDING_OPS as readonly string[]).includes(next.text) && this.peek(2).text === ")";
+  }
+
+  /** A value name: an identifier or a parenthesized binding operator. */
+  private valueName(what: string): Token {
+    if (this.isOpName()) {
+      const open = this.toks[this.i]!;
+      const op = this.toks[this.i + 1]!;
+      this.i += 3;
+      return { kind: "lident", text: op.text, span: this.from(open.span) };
+    }
+    return this.expectKind("lident", what);
+  }
+
   private peekIs(text: string): boolean {
     const t = this.peek();
     return t.text === text && t.kind === "op";
@@ -371,9 +392,16 @@ class Parser {
     const pat = this.pat();
     this.expect("=");
     const value = this.expr();
+    const ands: LetPlusBind[] = [];
+    // `and*` (or plain `and`) combines computations with `( and* )`.
+    while (this.eat("and*") || this.eat("and")) {
+      const p = this.pat();
+      this.expect("=");
+      ands.push({ pat: p, value: this.expr() });
+    }
     this.expect("in");
     const body = this.expr();
-    return { e: "letstar", pat, value, body, span: this.from(start) };
+    return { e: "letstar", pat, value, ands, body, span: this.from(start) };
   }
 
   private letPlus(): Expr {
@@ -383,7 +411,7 @@ class Parser {
       const pat = this.pat();
       this.expect("=");
       binds.push({ pat, value: this.expr() });
-    } while (this.eat("and"));
+    } while (this.eat("and+") || this.eat("and"));
     this.expect("in");
     const body = this.expr();
     return { e: "letplus", binds, body, span: this.from(start) };
@@ -490,6 +518,10 @@ class Parser {
     }
     if (this.eat("true")) return { e: "bool", value: true, span };
     if (this.eat("false")) return { e: "bool", value: false, span };
+    if (this.isOpName()) {
+      const n = this.valueName("a name");
+      return { e: "var", name: n.text, span: n.span };
+    }
     if (this.eat("(")) {
       if (this.eat(")")) return { e: "unit", span: this.from(span) };
       // Operator section: `(+)` is `fun a b -> a + b`

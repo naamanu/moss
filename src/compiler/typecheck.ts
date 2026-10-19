@@ -7,6 +7,7 @@
 
 import type { Decl, Expr, Pat, Program, TypeExpr } from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
+import { resolveLetStar } from "./desugar.ts";
 import { checkMatch, type VariantCtor } from "./exhaustive.ts";
 import {
   type Scheme,
@@ -345,10 +346,20 @@ class Checker {
     return generalize(t, this.level);
   }
 
-  private inferFun(params: Pat[], body: Expr, scope: Scope, componentSpan: Span | null): Type {
+  /**
+   * `expected`, when known, gives the parameters their types before the body is
+   * checked (type-directed checking for `f (fun x -> ...)`), so a misuse of `x`
+   * is reported where it happens rather than at the whole lambda.
+   */
+  private inferFun(params: Pat[], body: Expr, scope: Scope, componentSpan: Span | null, expected?: Type): Type {
     const inner = scope.child();
+    let exp = expected && prune(expected);
     const pts = params.map((p) => {
-      const t = tvar(this.level);
+      let t: Type = tvar(this.level);
+      if (exp?.k === "fun") {
+        t = exp.from;
+        exp = prune(exp.to);
+      } else exp = undefined;
       this.bindPat(p, t, inner);
       this.checkIrrefutable(p);
       return t;
@@ -469,7 +480,11 @@ class Checker {
       case "app": {
         let ft = this.infer(e.fn, scope);
         for (const a of e.args) {
-          const at = this.infer(a, scope);
+          const pre = prune(ft);
+          const at =
+            a.e === "fun" && pre.k === "fun"
+              ? ((a.ty = this.inferFun(a.params, a.body, scope, null, pre.from)))
+              : this.infer(a, scope);
           const f = prune(ft);
           if (f.k === "fun") {
             this.expect(a.span, at, f.from, "This argument");
@@ -506,6 +521,11 @@ class Checker {
         return this.infer(e.body, inner);
       }
       case "letstar": {
+        if (e.deferred) {
+          Object.assign(e, resolveLetStar(e, this.letStarProjects(scope, e.span)));
+          return this.inferInner(e, scope);
+        }
+        if (e.ands.length > 0) throw new MossError("'and*' needs library binding operators (not --builtin-binders)", e.ands[0]!.value.span);
         const vt = this.infer(e.value, scope);
         const t = tvar(this.level);
         this.expect(e.value.span, vt, tComp(t), "The right-hand side of 'let*'");
@@ -542,7 +562,7 @@ class Checker {
           if (c.guard) this.expect(c.guard.span, this.infer(c.guard, inner), tBool, "The guard");
           this.expect(c.body.span, this.infer(c.body, inner), r);
         }
-        this.checkCases(e.cases, e.span, "This match");
+        if (!e.generated) this.checkCases(e.cases, e.span, e.label ?? "This match");
         return r;
       }
       case "matchstar": {
@@ -667,6 +687,22 @@ class Checker {
       }
     }
     throw new MossError(`unknown operator '${e.op}'`, e.span);
+  }
+
+  /**
+   * Does the in-scope `( let* )` pass its continuation a wrapped value (e.g.
+   * Rhizoid's 'a val) rather than the plain one (a monad's 'a)? Decided from
+   * the parameter type of the continuation in the operator's type.
+   */
+  private letStarProjects(scope: Scope, span: Span): boolean {
+    const s = scope.get("let*");
+    if (!s) throw new MossError("unbound binding operator '( let* )'", span);
+    let t = prune(s.type);
+    if (t.k !== "fun") return false;
+    t = prune(t.to);
+    if (t.k !== "fun") return false;
+    const k = prune(t.from);
+    return k.k === "fun" && prune(k.from).k === "con";
   }
 
   private checkLetStarPat(p: Pat): void {

@@ -36,6 +36,9 @@ export interface Case {
   body: Expr;
 }
 
+/** Names of the binding operators, usable as `( let* )` etc. */
+export const BINDING_OPS = ["let*", "let+", "and*", "and+", "match*"] as const;
+
 export interface LetPlusBind {
   pat: Pat;
   value: Expr;
@@ -59,10 +62,26 @@ export type Expr = Base &
     | { e: "app"; fn: Expr; args: Expr[] }
     | { e: "fun"; params: Pat[]; body: Expr }
     | { e: "let"; rec: boolean; pat: Pat; params: Pat[]; value: Expr; body: Expr }
-    | { e: "letstar"; pat: Pat; value: Expr; body: Expr }
+    | {
+        e: "letstar";
+        pat: Pat;
+        value: Expr;
+        ands: LetPlusBind[];
+        body: Expr;
+        /** Desugared except for its tuple pattern, which the type checker resolves (see desugar.ts). */
+        deferred?: boolean;
+      }
     | { e: "letplus"; binds: LetPlusBind[]; body: Expr }
     | { e: "if"; cond: Expr; then: Expr; else: Expr }
-    | { e: "match"; scrut: Expr; cases: Case[] }
+    | {
+        e: "match";
+        scrut: Expr;
+        cases: Case[];
+        /** How to name this match in diagnostics (desugared `match*` keeps its name). */
+        label?: string;
+        /** Compiler-generated: skip exhaustiveness and redundancy checks. */
+        generated?: boolean;
+      }
     | { e: "matchstar"; scrut: Expr; cases: Case[] }
     | { e: "tuple"; items: Expr[] }
     | { e: "list"; items: Expr[] }

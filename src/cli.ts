@@ -7,15 +7,15 @@ import { createServer, type ServerResponse } from "node:http";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
-import { MossError, check, compile, formatError } from "./compiler/compile.ts";
+import { type Binders, MossError, check, compile, formatError } from "./compiler/compile.ts";
 
 const RUNTIME = resolve(dirname(fileURLToPath(import.meta.url)), "runtime/index.ts");
 
 /** Compile a .moss file and bundle it with the runtime into one browser script. */
-export async function bundle(file: string, minify = true): Promise<string> {
+export async function bundle(file: string, minify = true, binders: Binders = "library"): Promise<string> {
   const src = readFileSync(file, "utf8");
   const js =
-    compile(src, file, { onWarning: (w) => console.warn(formatError(w, "warning")) }) +
+    compile(src, file, { binders, onWarning: (w) => console.warn(formatError(w, "warning")) }) +
     `\nR.run(main, document.getElementById("app"), { debug: /[?&]debug\\b/.test(location.search) });\n`;
   const out = await esbuild.build({
     stdin: { contents: js, resolveDir: dirname(resolve(file)), loader: "js", sourcefile: basename(file) + ".js" },
@@ -67,18 +67,19 @@ function report(e: unknown): string {
 
 async function main(argv: string[]): Promise<number> {
   const [cmd, file, ...rest] = argv;
+  const binders: Binders = rest.includes("--builtin-binders") ? "builtin" : "library";
   const flag = (name: string, def: string) => {
     const i = rest.indexOf(name);
     return i >= 0 && rest[i + 1] ? rest[i + 1]! : def;
   };
   if (!cmd || !file || !["check", "build", "dev"].includes(cmd)) {
-    console.error("usage: moss <check|build|dev> <file.moss> [-o dir] [--port n]");
+    console.error("usage: moss <check|build|dev> <file.moss> [-o dir] [--port n] [--builtin-binders]");
     return 2;
   }
 
   if (cmd === "check") {
     try {
-      const { warnings } = check(readFileSync(file, "utf8"), file);
+      const { warnings } = check(readFileSync(file, "utf8"), file, binders);
       for (const w of warnings) console.warn(formatError(w, "warning"));
       console.log(`${file}: ok${warnings.length ? ` (${warnings.length} warning${warnings.length > 1 ? "s" : ""})` : ""}`);
       return 0;
@@ -91,7 +92,7 @@ async function main(argv: string[]): Promise<number> {
   if (cmd === "build") {
     const out = flag("-o", "dist");
     try {
-      const js = await bundle(file);
+      const js = await bundle(file, true, binders);
       mkdirSync(out, { recursive: true });
       writeFileSync(join(out, "app.js"), js);
       writeFileSync(join(out, "index.html"), html(basename(file, ".moss"), cssFor(file)));
@@ -110,7 +111,7 @@ async function main(argv: string[]): Promise<number> {
   const clients = new Set<ServerResponse>();
   const rebuild = async () => {
     try {
-      js = await bundle(file, false);
+      js = await bundle(file, false, binders);
       error = null;
       console.log(`[moss] built ${file}`);
     } catch (e) {

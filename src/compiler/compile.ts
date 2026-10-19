@@ -1,6 +1,7 @@
 import * as Runtime from "../runtime/index.ts";
 import type { Decl, Program } from "./ast.ts";
 import { codegen } from "./codegen.ts";
+import { desugar } from "./desugar.ts";
 import { MossError, sources } from "./errors.ts";
 import { parse } from "./parser.ts";
 import { PRELUDE } from "./prelude.ts";
@@ -15,11 +16,19 @@ export interface CompileOptions {
   requireApp?: boolean;
   /** Called with each non-fatal diagnostic (e.g. unused match cases). */
   onWarning?: (w: MossError) => void;
+  /**
+   * "library" (default): `let*`/`let+`/`and+`/`and*`/`match*` call the
+   * binding operators in scope. "builtin": the compiler's own typing and
+   * codegen for vals and computations (kept to check equivalence).
+   */
+  binders?: Binders;
 }
+
+export type Binders = "library" | "builtin";
 
 let preludeAst: Program | undefined;
 
-export function check(src: string, file = "main.moss"): Checked {
+export function check(src: string, file = "main.moss", binders: Binders = "library"): Checked {
   sources.set("<prelude>", PRELUDE);
   sources.set(file, src);
   preludeAst ??= parse(PRELUDE, "<prelude>");
@@ -27,7 +36,20 @@ export function check(src: string, file = "main.moss"): Checked {
   // Parsing mutates nothing, but type inference annotates nodes: give each
   // compilation its own copy of the prelude AST.
   const prelude: Program = structuredClone(preludeAst);
-  return typecheck({ decls: [...prelude.decls, ...user.decls] });
+  let decls = [...prelude.decls, ...user.decls];
+  if (binders === "library") decls = decls.map(desugarDecl);
+  return typecheck({ decls });
+}
+
+function desugarDecl(d: Decl): Decl {
+  switch (d.d) {
+    case "let":
+      return { ...d, body: desugar(d.body) };
+    case "app":
+      return { ...d, expr: desugar(d.expr) };
+    default:
+      return d;
+  }
 }
 
 /**
@@ -47,7 +69,7 @@ function checkExternal(d: Decl & { d: "external" }): void {
 }
 
 export function compile(src: string, file = "main.moss", opts: CompileOptions = {}): string {
-  const checked = check(src, file);
+  const checked = check(src, file, opts.binders);
   for (const w of checked.warnings) opts.onWarning?.(w);
   for (const d of checked.program.decls) if (d.d === "external") checkExternal(d);
   const apps = checked.program.decls.filter((d) => d.d === "app");
