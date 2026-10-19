@@ -1,0 +1,92 @@
+(* 10,000-row live table.
+   - A timer dispatches `Tick` every frame; the pure reducer moves `rate`
+     random prices using a deterministic PRNG kept in the model.
+   - `assoc` gives every row its own sub-graph (and its own "expanded"
+     state), so a tick recomputes only the rows that changed, and the vdom
+     diff skips every unchanged row in O(1) by physical equality.
+   Rows are grid divs (not <table>) so the browser can skip layout for
+   off-screen rows via `content-visibility`.
+   Open with ?debug to log per-frame stabilize/patch timings. *)
+
+type row = { id : int; name : string; price : float; change : float; volume : int }
+
+type model = { seed : int; rows : (int, row) map; ticks : int; rate : int; running : bool }
+
+type action = Tick | Faster | Slower | Toggle_running
+
+let n_rows = 10000
+
+let make_row i =
+  { id = i; name = "SYM" ^ show i; price = 100.0 +. Float.of_int (i mod 97); change = 0.0; volume = (i * 7919) mod 10000 }
+
+let initial =
+  { seed = 12345;
+    rows = List.fold (fun m i -> Map.add i (make_row i) m) Map.empty (List.range 0 n_rows);
+    ticks = 0;
+    rate = 50;
+    running = true }
+
+(* Move `k` random rows. *)
+let rec bump k seed rows =
+  if k = 0 then (seed, rows)
+  else
+    let s1 = Random.next seed in
+    let s2 = Random.next s1 in
+    let id = s1 mod n_rows in
+    let delta = Float.of_int (s2 mod 201 - 100) /. 100.0 in
+    let rows =
+      Map.update id
+        (fun r -> match r with
+          | Some r -> Some { r with price = r.price +. delta; change = delta; volume = r.volume + 1 }
+          | None -> None)
+        rows in
+    bump (k - 1) s2 rows
+
+let reduce m action =
+  match action with
+  | Tick when m.running ->
+    let (seed, rows) = bump m.rate m.seed m.rows in
+    { m with seed = seed; rows = rows; ticks = m.ticks + 1 }
+  | Tick -> m
+  | Faster -> { m with rate = Int.min 5000 (m.rate * 2) }
+  | Slower -> { m with rate = Int.max 1 (m.rate / 2) }
+  | Toggle_running -> { m with running = not m.running }
+
+component row_view (r : row val) =
+  let* expanded, set_expanded = state false in
+  let+ r = r and expanded = expanded and set_expanded = set_expanded in
+  div [key (show r.id); class_ (if r.change >= 0.0 then "row up" else "row down"); on_click (set_expanded (not expanded))] [
+    span [class_ "num"] [text (show r.id)];
+    span [] [text r.name];
+    span [class_ "num"] [text (Float.fixed 2 r.price)];
+    span [class_ "num change"] [text ((if r.change >= 0.0 then "+" else "") ^ Float.fixed 2 r.change)];
+    span [class_ "num"] [text (if expanded then "vol " ^ show r.volume else "…")]
+  ]
+
+component main =
+  let* model, dispatch = state_machine initial reduce in
+  let* tick = let+ dispatch = dispatch in dispatch Tick in
+  let* _ = every 16 tick in
+  let* rows = let+ m = model in m.rows in
+  let* views = assoc rows (fun _ r -> row_view r) in
+  let* body = let+ views = views in div [class_ "rows"] (Map.values views) in
+  let+ body = body and m = model and dispatch = dispatch in
+  div [class_ "page"] [
+    header [] [
+      h1 [] [text "Moss: 10,000 live rows"];
+      div [class_ "controls"] [
+        button [on_click (dispatch Toggle_running)] [text (if m.running then "Pause" else "Resume")];
+        button [on_click (dispatch Slower)] [text "Slower"];
+        span [class_ "rate"] [text (show m.rate ^ " updates / frame")];
+        button [on_click (dispatch Faster)] [text "Faster"];
+        span [class_ "ticks"] [text ("tick " ^ show m.ticks)]
+      ]
+    ];
+    div [class_ "row head"] [
+      span [class_ "num"] [text "#"]; span [] [text "Symbol"]; span [class_ "num"] [text "Price"];
+      span [class_ "num"] [text "Change"]; span [class_ "num"] [text "Detail"]
+    ];
+    body
+  ]
+
+app main
