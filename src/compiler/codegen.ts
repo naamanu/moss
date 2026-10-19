@@ -54,6 +54,8 @@ class Gen {
   private body: string[] = [];
   private globalNames = new Set<string>();
   private externWrappers = new Map<string, string>();
+  /** Constructor name -> {JS constant for nullary ctors, declaration index}, latest declaration wins. */
+  private ctorJs = new Map<string, { js: string | null; index: number }>();
 
   constructor(private readonly checked: Checked) {}
 
@@ -92,7 +94,17 @@ class Gen {
     switch (d.d) {
       case "type":
         if (d.def.kind === "variant") {
-          for (const c of d.def.ctors) if (!c.arg) this.header.push(`const C_${c.name} = { $: ${JSON.stringify(c.name)} };`);
+          // A later type may reuse a constructor name; give each declaration its own constant.
+          d.def.ctors.forEach((c, index) => {
+            let js: string | null = null;
+            if (!c.arg) {
+              js = `C_${c.name}`;
+              for (let i = 2; this.globalNames.has(js); i++) js = `C_${c.name}_${i}`;
+              this.globalNames.add(js);
+              this.header.push(`const ${js} = { $: ${JSON.stringify(c.name)}, i: ${index} };`);
+            }
+            this.ctorJs.set(c.name, { js, index });
+          });
         }
         return null;
       case "external": {
@@ -254,9 +266,11 @@ class Gen {
         if (b.arity > 1) return b.curried ?? this.wrapperFor(b);
         return b.js;
       }
-      case "ctor":
-        if (!e.arg) return `C_${e.name}`;
-        return `{ $: ${JSON.stringify(e.name)}, v: ${this.expr(e.arg, env, st)} }`;
+      case "ctor": {
+        const c = this.ctorJs.get(e.name)!;
+        if (!e.arg) return c.js!;
+        return `{ $: ${JSON.stringify(e.name)}, i: ${c.index}, v: ${this.expr(e.arg, env, st)} }`;
+      }
       case "app":
         return this.app(e, env, st);
       case "fun": {
@@ -481,6 +495,8 @@ class Gen {
     }
     const l = this.expr(e.left, env, st);
     const r = this.expr(e.right, env, st);
+    // A literal non-zero divisor can't raise Division_by_zero.
+    const nonzero = () => e.right.e === "int" && e.right.value !== 0;
     const primitive = () => {
       const t = e.operandTy && prune(e.operandTy);
       return t !== undefined && t.k === "con" && PRIMITIVE.has(t.name);
@@ -497,11 +513,11 @@ class Gen {
       case "*.":
         return `(${l} * ${r})`;
       case "/":
-        return `Math.trunc(${l} / ${r})`;
+        return nonzero() ? `Math.trunc(${l} / ${r})` : `R.idiv(${l}, ${r})`;
       case "/.":
         return `(${l} / ${r})`;
       case "mod":
-        return `(${l} % ${r})`;
+        return nonzero() ? `(${l} % ${r})` : `R.imod(${l}, ${r})`;
       case "==":
         return `(${l} === ${r})`;
       case "=":

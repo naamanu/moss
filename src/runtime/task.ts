@@ -56,12 +56,14 @@ export const Http_get_text = (url: string) =>
     return r.text();
   });
 
-export type Remote<T> = { $: "Loading" } | { $: "Loaded"; v: T } | { $: "Failed"; v: string };
+// Constructor indices (`i`) must match declaration order in the Moss prelude.
+export type Remote<T> = { $: "Loading"; i: 0 } | { $: "Loaded"; i: 1; v: T } | { $: "Failed"; i: 2; v: string };
 
-export const Loading: Remote<never> = { $: "Loading" };
-export const Loaded = <T>(v: T): Remote<T> => ({ $: "Loaded", v });
+export const Loading: Remote<never> = { $: "Loading", i: 0 };
+export const Loaded = <T>(v: T): Remote<T> => ({ $: "Loaded", i: 1, v });
 export const Failed = (e: unknown): Remote<never> => ({
   $: "Failed",
+  i: 2,
   v: e instanceof Error ? e.message : String(e),
 });
 

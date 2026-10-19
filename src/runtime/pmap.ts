@@ -226,11 +226,36 @@ export class PMap<K, V> {
   }
 }
 
-/** Structural ordering on Moss values used as map keys. */
+/**
+ * Values that `=` and `compare` may look inside: primitives, tuples (arrays),
+ * cons cells, variants and records (plain objects), and maps. Functions and
+ * opaque runtime objects (vals, effects, tasks, html) raise, as in OCaml.
+ */
+export function assertComparable(x: unknown, op: string): void {
+  if (typeof x === "function") throw new Error(`${op}: functional value`);
+  if (typeof x === "object" && x !== null && !Array.isArray(x) && !(x instanceof PMap)) {
+    const proto = Object.getPrototypeOf(x);
+    if (proto !== Object.prototype && proto !== null) throw new Error(`${op}: abstract value`);
+  }
+}
+
+/**
+ * Total structural order on Moss values (`compare`, map keys, and `<` on
+ * non-primitive types). Variants order by declaration (`i`), then payload;
+ * records by their fields in declaration order (literals are emitted in that
+ * order); lists element-wise with [] first; nan is smaller than every number.
+ */
 export function compare(a: any, b: any): number {
+  assertComparable(a, "compare");
+  assertComparable(b, "compare");
   if (a === b) return 0;
   const ta = typeof a;
-  if (ta === "number" || ta === "string" || ta === "boolean") return a < b ? -1 : a > b ? 1 : 0;
+  if (ta === "number") {
+    if (a !== a) return b !== b ? 0 : -1;
+    if (b !== b) return 1;
+    return a < b ? -1 : 1;
+  }
+  if (ta === "string" || ta === "boolean") return a < b ? -1 : a > b ? 1 : 0;
   if (Array.isArray(a)) {
     const n = Math.min(a.length, b.length);
     for (let i = 0; i < n; i++) {
@@ -240,22 +265,22 @@ export function compare(a: any, b: any): number {
     return a.length - b.length;
   }
   if (a === null || b === null) return a === null ? (b === null ? 0 : -1) : 1;
-  if (ta === "object") {
-    if ("$" in a) {
-      // Variants: order by tag, then payload.
-      if (a.$ !== b.$) return a.$ < b.$ ? -1 : 1;
-      return compare(a.v, b.v);
-    }
-    if ("h" in a && "t" in a) {
-      const c = compare(a.h, b.h);
-      return c !== 0 ? c : compare(a.t, b.t);
-    }
-    const keys = Object.keys(a).sort();
-    for (const k of keys) {
-      const c = compare(a[k], b[k]);
-      if (c !== 0) return c;
-    }
-    return 0;
+  if (a === undefined || b === undefined) return 0; // unit
+  if (a instanceof PMap) {
+    const xs: [any, any][] = [];
+    const ys: [any, any][] = [];
+    a.forEach((v, k) => xs.push([k, v]));
+    (b as PMap<any, any>).forEach((v, k) => ys.push([k, v]));
+    return compare(xs, ys);
+  }
+  if ("$" in a) {
+    if (a.$ !== b.$) return a.i - b.i;
+    return compare(a.v, b.v);
+  }
+  // Records and cons cells: fields in insertion (= declaration) order.
+  for (const k in a) {
+    const c = compare(a[k], b[k]);
+    if (c !== 0) return c;
   }
   return 0;
 }

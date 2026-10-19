@@ -100,6 +100,7 @@ class Parser {
       const name = this.expectKind("lident", "a name").text;
       const params: Pat[] = [];
       while (!this.is("=")) params.push(this.patAtom());
+      if (rec && params.length === 0) this.fail("'let rec' must define a function", start);
       this.expect("=");
       const body = this.expr();
       return { d: "let", rec, name, params, body, component, span: this.from(start) };

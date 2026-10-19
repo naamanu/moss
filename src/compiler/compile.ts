@@ -1,4 +1,5 @@
-import type { Program } from "./ast.ts";
+import * as Runtime from "../runtime/index.ts";
+import type { Decl, Program } from "./ast.ts";
 import { codegen } from "./codegen.ts";
 import { MossError, sources } from "./errors.ts";
 import { parse } from "./parser.ts";
@@ -29,9 +30,26 @@ export function check(src: string, file = "main.moss"): Checked {
   return typecheck({ decls: [...prelude.decls, ...user.decls] });
 }
 
+/**
+ * An external must name a runtime export, and a function-typed external must
+ * take exactly as many (uncurried) arguments as its type has arrows.
+ */
+function checkExternal(d: Decl & { d: "external" }): void {
+  const impl = (Runtime as Record<string, unknown>)[d.js];
+  if (impl === undefined) throw new MossError(`external '${d.name}': the runtime has no export named "${d.js}"`, d.span);
+  let arity = 0;
+  for (let t = d.type; t.t === "fun"; t = t.to) arity++;
+  if (arity === 0) return; // a value (or a function used as a value)
+  if (typeof impl !== "function") throw new MossError(`external '${d.name}': runtime export "${d.js}" is not a function`, d.span);
+  if (impl.length !== arity) {
+    throw new MossError(`external '${d.name}': type takes ${arity} argument(s) but runtime "${d.js}" takes ${impl.length}`, d.span);
+  }
+}
+
 export function compile(src: string, file = "main.moss", opts: CompileOptions = {}): string {
   const checked = check(src, file);
   for (const w of checked.warnings) opts.onWarning?.(w);
+  for (const d of checked.program.decls) if (d.d === "external") checkExternal(d);
   const apps = checked.program.decls.filter((d) => d.d === "app");
   if (opts.requireApp !== false && apps.length === 0) {
     throw new MossError("no 'app' declaration: add e.g. 'app main' at the end of the file", undefined);

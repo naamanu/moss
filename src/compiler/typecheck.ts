@@ -72,6 +72,9 @@ const BUILTIN_TYPES: Record<string, number> = {
   comp: 1,
 };
 
+/** Types whose values are opaque at runtime (or contain functions) and can't be compared. */
+const OPAQUE = new Set(["effect", "val", "comp", "task", "html", "attr"]);
+
 class Scope {
   private vars = new Map<string, Scheme>();
   constructor(readonly parent: Scope | null) {}
@@ -101,6 +104,68 @@ class Checker {
   private globals = new Map<string, GlobalInfo>();
   private level = 0;
   private warnings: MossError[] = [];
+  /** Type abbreviations currently being expanded (to reject cycles). */
+  private expanding = new Set<string>();
+  /** Operand types of `=`, `<`, ... in the current declaration, checked once it's fully inferred. */
+  private comparisons: { span: Span; op: string; ty: Type }[] = [];
+
+  // -- comparability ------------------------------------------------------------
+
+  /**
+   * Why values of type `t` can't be compared structurally, or null if they can.
+   * Type variables pass here; the runtime raises if they turn out to be functions.
+   */
+  private incomparable(t: Type, seen = new Set<string>()): string | null {
+    t = prune(t);
+    switch (t.k) {
+      case "var":
+        return null;
+      case "fun":
+        return "functions";
+      case "tuple":
+        for (const i of t.items) {
+          const r = this.incomparable(i, seen);
+          if (r) return r;
+        }
+        return null;
+      case "con": {
+        if (OPAQUE.has(t.name)) return `values of type '${t.name}'`;
+        for (const a of t.args) {
+          const r = this.incomparable(a, seen);
+          if (r) return r;
+        }
+        const info = this.types.get(t.name);
+        if (!info || seen.has(t.name)) return null;
+        seen.add(t.name);
+        const vars = new Map<string, Type>(info.params.map((p, i) => [p, t.args[i]!]));
+        const def = info.def.def;
+        const parts =
+          def.kind === "variant" ? def.ctors.flatMap((c) => (c.arg ? [c.arg] : []))
+          : def.kind === "record" ? def.fields.map((f) => f.type)
+          : [];
+        for (const te of parts) {
+          const r = this.incomparable(this.convert(te, vars, false), seen);
+          if (r) return `${r} (inside '${t.name}')`;
+        }
+        return null;
+      }
+    }
+  }
+
+  private checkComparisons(): void {
+    const pending = this.comparisons;
+    this.comparisons = [];
+    for (const c of pending) {
+      const why = this.incomparable(c.ty);
+      if (why) {
+        throw new MossError(
+          `'${c.op}' can't compare values of type ${new TypePrinter().print(c.ty)}: it contains ${why}` +
+            "\n  hint: '==' compares by identity",
+          c.span,
+        );
+      }
+    }
+  }
 
   // -- exhaustiveness ---------------------------------------------------------
 
@@ -196,8 +261,14 @@ class Checker {
           throw new MossError(`type '${te.name}' expects ${info.params.length} argument(s), got ${args.length}`, te.span);
         }
         if (info.def.def.kind === "alias") {
-          const sub = new Map<string, Type>(info.params.map((p, i) => [p, args[i]!]));
-          return this.convert(info.def.def.type, sub, false);
+          if (this.expanding.has(te.name)) throw new MossError(`type abbreviation '${te.name}' is cyclic`, te.span);
+          this.expanding.add(te.name);
+          try {
+            const sub = new Map<string, Type>(info.params.map((p, i) => [p, args[i]!]));
+            return this.convert(info.def.def.type, sub, false);
+          } finally {
+            this.expanding.delete(te.name);
+          }
         }
         return tcon(te.name, ...args);
       }
@@ -220,6 +291,7 @@ class Checker {
       }
       case "let": {
         const t = this.letBinding(d.name, d.rec, d.params, d.body, d.span, top, d.component);
+        this.checkComparisons();
         top.set(d.name, t);
         this.globals.set(d.name, { kind: "let", arity: d.params.length });
         return;
@@ -227,6 +299,7 @@ class Checker {
       case "app": {
         const t = this.infer(d.expr, top);
         this.expect(d.expr.span, t, tComp(tHtml), "The app");
+        this.checkComparisons();
         return;
       }
     }
@@ -507,6 +580,9 @@ class Checker {
         }
         const missing = [...fields.keys()].filter((f) => !given.has(f));
         if (missing.length > 0) throw new MossError(`missing field(s) ${missing.join(", ")} in record '${typeName}'`, e.span);
+        // Emit fields in declaration order: structural comparison relies on it.
+        const order = [...fields.keys()];
+        e.fields.sort((a, b) => order.indexOf(a.name) - order.indexOf(b.name));
         return type;
       }
       case "update": {
@@ -580,6 +656,7 @@ class Checker {
       case ">=":
         this.expect(e.right.span, r, l);
         e.operandTy = l;
+        if (e.op !== "==") this.comparisons.push({ span: e.span, op: e.op, ty: l });
         return tBool;
       case "::":
         this.expect(e.right.span, r, tList(l));

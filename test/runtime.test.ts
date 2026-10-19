@@ -28,6 +28,23 @@ describe("incr", () => {
     expect(onlyParity.value).toBe(0);
   });
 
+  it("recovers after a computation throws mid-stabilization", () => {
+    const a = new Var(1);
+    const b = new Var(10);
+    const inv = new Map1(a, (x) => R.idiv(100, x));
+    const other = new Map1(b, (x) => x + 1);
+    const o1 = observe(inv);
+    const o2 = observe(other);
+    a.set(0);
+    b.set(20);
+    expect(() => stabilize()).toThrow("Division_by_zero");
+    expect(o1.value).toBe(100); // the failing node keeps its last good value
+    a.set(4);
+    stabilize(); // later stabilizations proceed normally
+    expect(o1.value).toBe(25);
+    expect(o2.value).toBe(21);
+  });
+
   it("stops updating nodes once unobserved", () => {
     const a = new Var(1);
     let runs = 0;

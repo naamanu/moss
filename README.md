@@ -151,8 +151,37 @@ The syntax is ML-style: `let`/`let rec`/`in`, `fun x -> e`, `match ... with`,
 `if ... then ... else`, tuples, lists `[a; b]`, `::`, `@`, `|>`, records
 `{ a = 1; b = "x" }`, `{ r with a = 2 }`, `r.a`, and variants
 `type t = A | B of int * string`. Integers and floats use separate operators
-(`+` vs `+.`), as in OCaml. `^` concatenates strings. `=` is structural
-equality.
+(`+` vs `+.`), as in OCaml. `^` concatenates strings.
+
+### Values and their semantics
+
+- **Integers** are JavaScript numbers, exact up to 2^53 − 1. A larger
+  literal is a compile error, and arithmetic beyond that range loses
+  precision instead of wrapping. `/` truncates toward zero, and `mod` takes
+  the sign of the dividend. Dividing by zero (`/` or `mod`) raises
+  `Division_by_zero`.
+- **Equality.** `=` and `<>` are structural. `==` is physical (identity).
+  - Comparing values that contain functions or opaque values (`effect`,
+    `val`, `comp`, `task`, `html`, `attr`) with `=` or `<` is a compile
+    error when the type is known. When it's only known at runtime (inside
+    polymorphic code), it raises `equal: functional value` (or
+    `abstract value`, or `compare: …` for ordering).
+  - `nan = nan` is `false`, and so is `(nan, 1) = (nan, 1)`.
+- **Ordering.** `<`, `>`, `<=`, `>=` on numbers, strings and booleans are the
+  usual ones. On other types, and for map keys, a total structural order is
+  used:
+  - variants by declaration order of their constructors, then payload;
+  - records by their fields in declaration order;
+  - tuples and lists element by element, with `[]` first;
+  - `nan` before every other number.
+- **Strings** support the escapes `\n`, `\t`, `\r`, `\"` and `\\`. Any other
+  escape is a compile error.
+- **Runtime errors** (`Division_by_zero`, comparing functions in polymorphic
+  code) are thrown as JavaScript exceptions and abandon the current frame.
+  The failing node keeps its last good value. Later frames run normally,
+  and the failing node is recomputed when its inputs next change.
+- **`external`** declarations are checked at compile time. The JS name must
+  be a runtime export, and a function's arity must match its type.
 
 Typing is Hindley–Milner with let-polymorphism, records, variants and
 parameterized types (`'a option`, `('k, 'v) map`). Type annotations are

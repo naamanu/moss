@@ -197,3 +197,104 @@ component c (m : mode val) =
     ok("let f p = let (a, (b, _)) = p in a + b");
   });
 });
+
+describe("accepted programs behave consistently", () => {
+  /** Compile `src`, evaluate it, and return top-level values by name (or the thrown message). */
+  async function evalMoss(src: string, names: string[]): Promise<any[] | string> {
+    const R = await import("../src/runtime/index.ts");
+    const js = compile(`${src}\napp (return (const (text "")))`, "t.moss");
+    const body = js.replace(/^import .*$/m, "").replace(/^export const main = .*$/m, "");
+    try {
+      return new Function("R", `${body}\nreturn [${names.map((n) => `$${n}`).join(", ")}];`)(R);
+    } catch (e) {
+      return (e as Error).message;
+    }
+  }
+
+  it("lets a user type reuse prelude constructor names", async () => {
+    expect(await evalMoss("type t = None | Some of int\nlet x = match Some 3 with None -> 0 | Some n -> n", ["x"])).toEqual([3]);
+  });
+
+  it("orders variants and records by declaration, not by name", async () => {
+    const [lt, keys, rec] = (await evalMoss(
+      `type size = Small | Medium | Large
+type r = { b : int; a : int }
+let lt = Small < Large
+let keys = Map.keys (Map.of_list [(Large, 1); (Small, 2); (Medium, 3)])
+let rec_lt = { a = 2; b = 1 } < { a = 1; b = 2 }`,
+      ["lt", "keys", "rec_lt"],
+    )) as any[];
+    expect(lt).toBe(true);
+    expect([keys.h.$, keys.t.h.$, keys.t.t.h.$]).toEqual(["Small", "Medium", "Large"]);
+    expect(rec).toBe(true);
+  });
+
+  it("treats nan the same in primitive and structural equality", async () => {
+    expect(await evalMoss("let nan = 0.0 /. 0.0\nlet a = nan = nan\nlet b = (nan, 1) = (nan, 1)", ["a", "b"])).toEqual([false, false]);
+  });
+
+  it("raises Division_by_zero instead of producing a non-integer", async () => {
+    expect(await evalMoss("let d = 7 / 0", ["d"])).toBe("Division_by_zero");
+    expect(await evalMoss("let d = 7 mod (3 - 3)", ["d"])).toBe("Division_by_zero");
+    expect(await evalMoss("let d = (-7) / 2\nlet m = (-7) mod 2", ["d", "m"])).toEqual([-3, -1]);
+  });
+
+  it("rejects comparing functions and opaque values at compile time", () => {
+    expect(errorOf("let f x = x + 1\nlet same = f = f")).toContain("'=' can't compare values of type int -> int: it contains functions");
+    expect(errorOf("type r = { e : unit effect }\nlet same = { e = Effect.none } = { e = Effect.none }")).toContain(
+      "contains values of type 'effect' (inside 'r')",
+    );
+    expect(errorOf("let x = (fun a -> a) < (fun a -> a)")).toContain("'<' can't compare");
+    // Physical equality is allowed on anything.
+    expect(() => check("let f x = x\nlet same = f == f", "t.moss")).not.toThrow();
+  });
+
+  it("raises at runtime when polymorphic code compares functions", async () => {
+    expect(await evalMoss("let eq a b = a = b\nlet f x = x\nlet same = eq f f", ["same"])).toBe("equal: functional value");
+  });
+
+  it("rejects programs that used to crash the compiler or generate broken code", () => {
+    expect(errorOf("let rec xs = 1 :: xs")).toContain("'let rec' must define a function");
+    expect(errorOf("type t = t list")).toContain("type abbreviation 't' is cyclic");
+    expect(errorOf('let s = "a\\qb"')).toContain("unknown escape '\\q'");
+    expect(errorOf("let n = 9007199254740993")).toContain("too large");
+  });
+
+  it("checks externals against the runtime", () => {
+    const err = (src: string) => {
+      try {
+        compile(src + "\napp (return (const (text \"\")))", "t.moss");
+      } catch (e) {
+        return (e as Error).message;
+      }
+      return "no error";
+    };
+    expect(err('external nope : int -> int = "does_not_exist"')).toContain('no export named "does_not_exist"');
+    expect(err('external add3 : int -> int -> int -> int = "Int_max"')).toContain("takes 3 argument(s) but runtime");
+  });
+
+  it("builds runtime variants with the prelude's constructor indices", async () => {
+    const R = await import("../src/runtime/index.ts");
+    const prelude = check("", "t.moss").program.decls;
+    const index = (ctor: string) => {
+      for (const d of prelude) {
+        if (d.d === "type" && d.def.kind === "variant") {
+          const i = d.def.ctors.findIndex((c) => c.name === ctor);
+          if (i >= 0) return i;
+        }
+      }
+      throw new Error(ctor);
+    };
+    const built: [string, { $: string; i: number }][] = [
+      ["None", R.None],
+      ["Some", R.Some(1)],
+      ["Loading", R.Loading],
+      ["Loaded", R.Loaded(1)],
+      ["Failed", R.Failed("x")],
+    ];
+    for (const [name, v] of built) {
+      expect(v.$).toBe(name);
+      expect(v.i).toBe(index(name));
+    }
+  });
+});

@@ -70,7 +70,11 @@ export function lex(src: string, file: string): Token[] {
         i++;
         while (i < src.length && isDigit(src[i]!)) i++;
       }
-      push(kind, src.slice(start, i).replaceAll("_", ""), start);
+      const text = src.slice(start, i).replaceAll("_", "");
+      if (kind === "int" && !Number.isSafeInteger(Number(text))) {
+        throw new MossError(`integer literal ${text} is too large (ints are exact up to 2^53 - 1)`, span(start));
+      }
+      push(kind, text, start);
       continue;
     }
     if (c === '"') {
@@ -78,8 +82,10 @@ export function lex(src: string, file: string): Token[] {
       let s = "";
       while (i < src.length && src[i] !== '"') {
         if (src[i] === "\\") {
-          const e = src[i + 1];
-          s += e === "n" ? "\n" : e === "t" ? "\t" : e === '"' ? '"' : e === "\\" ? "\\" : (e ?? "");
+          const e = src[i + 1] ?? "";
+          const ESC: Record<string, string> = { n: "\n", t: "\t", r: "\r", '"': '"', "\\": "\\" };
+          if (!(e in ESC)) throw new MossError(`unknown escape '\\${e}' (use \\n \\t \\r \\" or \\\\)`, { file, start: i, end: i + 2 });
+          s += ESC[e];
           i += 2;
         } else s += src[i++];
       }

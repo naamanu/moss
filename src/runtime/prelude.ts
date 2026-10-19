@@ -5,7 +5,7 @@
 // variants are `{$: tag, v?: payload}`, records are plain objects.
 
 import { Eff } from "./effect.ts";
-import { PMap, compare } from "./pmap.ts";
+import { PMap, assertComparable, compare } from "./pmap.ts";
 import { VElem, VText, type Handler, type VNode } from "./vdom.ts";
 
 export type List<T> = { h: T; t: List<T> } | null;
@@ -13,8 +13,9 @@ type F1<A, B> = (a: A) => B;
 type F2<A, B, C> = (a: A) => (b: B) => C;
 type F3<A, B, C, D> = (a: A) => (b: B) => (c: C) => D;
 
-export const None = { $: "None" } as const;
-export const Some = <T>(v: T) => ({ $: "Some", v });
+// Constructor indices (`i`) must match declaration order in the Moss prelude.
+export const None = { $: "None", i: 0 } as const;
+export const Some = <T>(v: T) => ({ $: "Some", i: 1, v });
 
 // ---------------------------------------------------------------------------
 // Core helpers used directly by generated code
@@ -25,9 +26,12 @@ export function list(...xs: any[]): List<any> {
   return l;
 }
 
+/** Structural equality (`=`). nan is not equal to itself, as in IEEE and OCaml. */
 export function eq(a: any, b: any): boolean {
-  if (a === b) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return a !== a && b !== b;
+  assertComparable(a, "equal");
+  assertComparable(b, "equal");
+  if (a === b) return typeof a !== "number" || a === a;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
   if (Array.isArray(a)) {
     if (a.length !== b.length) return false;
     for (let i = 0; i < a.length; i++) if (!eq(a[i], b[i])) return false;
@@ -46,6 +50,16 @@ export function eq(a: any, b: any): boolean {
 }
 
 export const cmp = compare;
+
+/** Integer division and remainder; raise like OCaml's Division_by_zero. */
+export function idiv(a: number, b: number): number {
+  if (b === 0) throw new Error("Division_by_zero");
+  return Math.trunc(a / b);
+}
+export function imod(a: number, b: number): number {
+  if (b === 0) throw new Error("Division_by_zero");
+  return a % b;
+}
 
 export function matchFail(where: string): never {
   throw new Error(`Match failure at ${where}`);
