@@ -2,7 +2,7 @@
 // incremental graph, possibly allocating state. Instantiating a computation
 // builds its nodes once; afterwards only values flow through the graph.
 
-import { Eff } from "./effect.ts";
+import { Eff } from "../../src/runtime/effect.ts";
 import {
   Bind,
   Const,
@@ -17,9 +17,9 @@ import {
   schedule,
   unlink,
 } from "./incr.ts";
-import { PMap } from "./pmap.ts";
-import { eq } from "./prelude.ts";
-import { Failed, Loaded, Loading, type Remote, type Task, isAbort } from "./task.ts";
+import { PMap } from "../../src/runtime/pmap.ts";
+import { eq } from "../../src/runtime/prelude.ts";
+import { Failed, Loaded, Loading, type Remote, type Task, isAbort } from "../../src/runtime/task.ts";
 
 export type Val<T> = Node<T>;
 

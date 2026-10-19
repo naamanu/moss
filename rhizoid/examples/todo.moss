@@ -8,6 +8,8 @@
    - `match*` swaps between the empty state and the list; the list keeps its
      per-row state while hidden. *)
 
+open Rhizoid
+
 type todo = { id : int; title : string; completed : bool }
 
 type filter = All | Active | Completed
@@ -53,7 +55,7 @@ let initial =
       (3, { id = 3; title = "Ship it"; completed = false })
     ] }
 
-component todo_row dispatch (t : todo val) =
+let todo_row dispatch (t : todo val) =
   let* editing, set_editing = state false in
   let* draft, set_draft = state "" in
   let+ t = t and editing = editing and set_editing = set_editing
@@ -72,7 +74,7 @@ component todo_row dispatch (t : todo val) =
 let filter_link current set_filter f name =
   button [class_ (if current = f then "selected" else ""); on_click (set_filter f)] [text name]
 
-component page =
+let page =
   let* model, dispatch = state_machine initial reduce in
   let* draft, set_draft = state "" in
   let* filter, set_filter = state All in
@@ -118,4 +120,4 @@ component page =
     ]
   ]
 
-app page
+let main = start page

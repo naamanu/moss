@@ -8,6 +8,8 @@
      request in flight. Showing it again restarts the request; the query
      itself is kept, because inactive branches keep their state. *)
 
+open Rhizoid
+
 let fruit = [
   "apple"; "apricot"; "avocado"; "banana"; "blackberry"; "blueberry"; "cherry";
   "clementine"; "coconut"; "cranberry"; "date"; "dragonfruit"; "elderberry";
@@ -39,7 +41,7 @@ let results_view q r =
     | Loaded [] -> p [class_ "status"] [text "No matches."]
     | Loaded ws -> ul [class_ "results"] (List.map (fun w -> li [key w] [text w]) ws)
 
-component search_panel =
+let search_panel =
   let* query, set_query = state "" in
   let* key = let+ q = query in String.lower (String.trim q) in
   let* results = resource key search in
@@ -49,7 +51,7 @@ component search_panel =
     results_view k r
   ]
 
-component page =
+let page =
   let* visible, set_visible = state true in
   let* panel =
     match* visible with
@@ -66,4 +68,4 @@ component page =
     panel
   ]
 
-app page
+let main = start page

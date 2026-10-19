@@ -19,7 +19,7 @@ export interface Token {
 
 const KEYWORDS = new Set([
   "let", "let*", "let+", "rec", "in", "and", "and*", "and+", "fun", "match", "match*", "with", "when", "if", "then",
-  "else", "type", "of", "component", "app", "external", "open", "true", "false", "mod",
+  "else", "type", "of", "external", "open", "true", "false", "mod",
 ]);
 
 // Longest first.

@@ -169,12 +169,17 @@ export function arity(t: Type): number {
 // ---------------------------------------------------------------------------
 // Printing
 
-/** Types defined in this module print without their module prefix. */
-export const printContext = { module: "" };
+/**
+ * Types print by the shortest name that refers to them where the message is
+ * reported: unqualified if defined in or opened into that module.
+ */
+export const printContext: { module: string; types?: Map<string, string> } = { module: "" };
 
 export const typeName = (q: string): string => {
+  const short = q.slice(q.lastIndexOf(".") + 1);
+  if (printContext.types?.get(short) === q) return short;
   const m = printContext.module;
-  return m && q.startsWith(`${m}.`) ? q.slice(m.length + 1) : q;
+  return m && q.startsWith(`${m}.`) ? short : q;
 };
 
 export class TypePrinter {

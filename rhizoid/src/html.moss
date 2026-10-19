@@ -1,0 +1,3 @@
+(* Html helpers. *)
+
+external none : Rhizoid.html = "Html_none"

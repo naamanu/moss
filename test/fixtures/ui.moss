@@ -1,0 +1,21 @@
+(* A test double of a UI library like Rhizoid: just enough signatures to
+   exercise binding operators, attributes and match* in the type checker.
+   Only type-checked (externals are never run). *)
+
+type 'a val [@@opaque] [@@hint_found "a 'val' can only be read inside 'let+ x = ... in ...'"]
+type 'a comp [@@opaque]
+  [@@hint_found "bind the computation first with 'let* x = ... in ...' to get a 'val'"]
+  [@@hint_expected "wrap a pure result with 'let+' (or 'return (const x)') to make a computation"]
+type html [@@opaque]
+
+external ( let* ) : 'a comp -> ('a val -> 'b comp) -> 'b comp = "let_star"
+external ( let+ ) : 'a val -> ('a -> 'b) -> 'b comp = "let_plus"
+external ( and+ ) : 'a val -> 'b val -> ('a * 'b) val = "and_plus"
+external ( and* ) : 'a comp -> 'b comp -> ('a * 'b) comp = "and_star"
+external ( match* ) : 'a val -> ('a -> int) -> (int -> 'a val -> 'r comp) -> 'r comp = "match_star"
+
+external state : 'a -> ('a * ('a -> unit effect)) comp = "state"
+external return : 'a val -> 'a comp = "ret"
+external const : 'a -> 'a val = "cnst"
+external text : string -> html = "Html_text"
+external start : html comp -> unit effect = "start"

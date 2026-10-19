@@ -1,11 +1,12 @@
 // Hindley–Milner type inference (Algorithm W with levels) for Moss.
 //
-// The Bonsai discipline is enforced purely through types: `'a val` is an
-// incremental value that pure code can never read directly; the only way in
-// is `let+`, whose result is a `'a comp`. `let*` binds the result of a
-// computation as a `val`, and `match*` switches computations on a `val`.
+// The compiler knows nothing about UI: libraries such as Rhizoid declare
+// abstract types (e.g. `'a val`) whose only operations are their externals,
+// so an incremental value can't be read outside the library's `let+`.
+// Attributes on type declarations ([@@opaque], [@@hint_found],
+// [@@hint_expected]) supply comparability and error hints.
 
-import { type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr, qualify } from "./ast.ts";
+import { BINDING_OPS, type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr, qualify } from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
 import { resolveLetStar } from "./desugar.ts";
 import { checkMatch, type VariantCtor } from "./exhaustive.ts";
@@ -20,14 +21,14 @@ import {
   mono,
   prune,
   tBool,
-  tComp,
+
   tFloat,
-  tHtml,
+
   tInt,
   tList,
   tString,
   tUnit,
-  tVal,
+
   tcon,
   tfun,
   ttuple,
@@ -73,12 +74,7 @@ const BUILTIN_TYPES: Record<string, number> = {
   bool: 0,
   unit: 0,
   list: 1,
-  val: 1,
-  comp: 1,
 };
-
-/** Types whose values are opaque at runtime (or contain functions) and can't be compared. */
-const OPAQUE = new Set(["effect", "val", "comp", "task", "html", "attr"]);
 
 /** Names visible in (or exported by) a module: short name -> qualified global name. */
 export class ModEnv {
@@ -154,7 +150,7 @@ class Checker {
         }
         return null;
       case "con": {
-        if (OPAQUE.has(t.name)) return `values of type '${typeName(t.name)}'`;
+        if (this.attr(t.name, "opaque") !== undefined) return `values of type '${typeName(t.name)}'`;
         for (const a of t.args) {
           const r = this.incomparable(a, seen);
           if (r) return r;
@@ -239,6 +235,7 @@ class Checker {
     if (!this.exports.has(m)) this.exports.set(m, new ModEnv());
     this.env = new ModEnv();
     if (m !== PRELUDE) this.env.addAll(this.exports.get(PRELUDE)!);
+    printContext.types = this.env.types;
   }
 
   /** Record a top-level definition of the current module. */
@@ -292,17 +289,27 @@ class Checker {
     const a = p.print(actual);
     const b = p.print(expected);
     let msg = `${what} has type ${a} but an expression was expected of type ${b}`;
-    const aa = prune(actual);
-    const bb = prune(expected);
-    const isCon = (t: Type, n: string) => t.k === "con" && t.name === n;
-    if (isCon(aa, "val") && !isCon(bb, "val") && !isCon(bb, "comp")) {
-      msg += "\n  hint: a 'val' can only be read inside 'let+ x = ... in ...'";
-    } else if (isCon(aa, "comp") && isCon(bb, "val")) {
-      msg += "\n  hint: bind the computation first with 'let* x = ... in ...' to get a 'val'";
-    } else if (!isCon(aa, "comp") && isCon(bb, "comp")) {
-      msg += "\n  hint: wrap a pure result with 'let+' (or 'return (const x)') to make a computation";
-    }
+    const hint = this.hintFor(prune(actual), prune(expected));
+    if (hint) msg += `\n  hint: ${hint}`;
     throw new MossError(msg, span);
+  }
+
+  /** A library-supplied hint: the expected type's `hint_expected`, else the actual type's `hint_found`. */
+  private hintFor(actual: Type, expected: Type): string | undefined {
+    if (actual.k === "var" || expected.k === "var") return undefined;
+    const name = (t: Type) => (t.k === "con" ? t.name : undefined);
+    if (name(actual) === name(expected) && name(actual) !== undefined) return undefined;
+    return (
+      (name(expected) && this.attr(name(expected)!, "hint_expected")) ||
+      (name(actual) && this.attr(name(actual)!, "hint_found")) ||
+      undefined
+    );
+  }
+
+  /** The payload of attribute `attr` on type `q` ("" if it has none), or undefined if absent. */
+  private attr(q: string, attr: string): string | undefined {
+    const a = this.types.get(q)?.def.attrs.find((x) => x.name === attr);
+    return a === undefined ? undefined : (a.arg ?? "");
   }
 
   /** Unify `actual` (the type of the thing at `span`) with `expected`. */
@@ -380,7 +387,7 @@ class Checker {
         return;
       }
       case "let": {
-        const t = this.letBinding(d.name, d.rec, d.params, d.body, d.span, top, d.component);
+        const t = this.letBinding(d.name, d.rec, d.params, d.body, d.span, top);
         this.checkComparisons();
         if (d.name === "main" && this.mod === this.entry) {
           this.expect(d.span, instantiate(t, this.level), tcon("effect", tUnit), "'main'");
@@ -395,12 +402,6 @@ class Checker {
         const ex = this.exports.get(d.name);
         if (!ex) throw new MossError(`unknown module '${d.name}'`, d.span);
         this.env.addAll(ex);
-        return;
-      }
-      case "app": {
-        const t = this.infer(d.expr, top);
-        this.expect(d.expr.span, t, tComp(tHtml), "The app");
-        this.checkComparisons();
         return;
       }
     }
@@ -433,17 +434,16 @@ class Checker {
   }
 
   /** Infer a (possibly recursive, possibly parameterized) let binding and generalize it. */
-  private letBinding(name: string, rec: boolean, params: Pat[], body: Expr, span: Span, scope: Scope, component = false): Scheme {
+  private letBinding(name: string, rec: boolean, params: Pat[], body: Expr, span: Span, scope: Scope): Scheme {
     this.level++;
     const self = tvar(this.level);
     const inner = scope.child();
     if (rec) inner.set(name, mono(self));
     let t: Type;
     if (params.length > 0) {
-      t = this.inferFun(params, body, inner, component ? span : null);
+      t = this.inferFun(params, body, inner);
     } else {
       t = this.infer(body, inner);
-      if (component) this.expect(body.span, t, tComp(tvar(this.level)), "A component");
     }
     if (rec) this.expect(span, self, t);
     this.level--;
@@ -455,7 +455,7 @@ class Checker {
    * checked (type-directed checking for `f (fun x -> ...)`), so a misuse of `x`
    * is reported where it happens rather than at the whole lambda.
    */
-  private inferFun(params: Pat[], body: Expr, scope: Scope, componentSpan: Span | null, expected?: Type): Type {
+  private inferFun(params: Pat[], body: Expr, scope: Scope, expected?: Type): Type {
     const inner = scope.child();
     let exp = expected && prune(expected);
     const pts = params.map((p) => {
@@ -469,7 +469,6 @@ class Checker {
       return t;
     });
     let r = this.infer(body, inner);
-    if (componentSpan) this.expect(body.span, r, tComp(tvar(this.level)), "A component body");
     for (let i = pts.length - 1; i >= 0; i--) r = tfun(pts[i]!, r);
     return r;
   }
@@ -590,7 +589,12 @@ class Checker {
         return tUnit;
       case "var": {
         const found = this.lookupValue(scope, e.name, e.span);
-        if (!found) throw new MossError(`unbound variable '${e.name}'`, e.span);
+        if (!found) {
+          if ((BINDING_OPS as readonly string[]).includes(e.name)) {
+            throw new MossError(`unbound binding operator '( ${e.name} )': open a module that defines it (e.g. 'open Rhizoid')`, e.span);
+          }
+          throw new MossError(`unbound variable '${e.name}'`, e.span);
+        }
         e.resolved = found.resolved;
         return instantiate(found.scheme, this.level);
       }
@@ -608,7 +612,7 @@ class Checker {
           const pre = prune(ft);
           const at =
             a.e === "fun" && pre.k === "fun"
-              ? ((a.ty = this.inferFun(a.params, a.body, scope, null, pre.from)))
+              ? ((a.ty = this.inferFun(a.params, a.body, scope, pre.from)))
               : this.infer(a, scope);
           const f = prune(ft);
           if (f.k === "fun") {
@@ -628,7 +632,7 @@ class Checker {
         return ft;
       }
       case "fun":
-        return this.inferFun(e.params, e.body, scope, null);
+        return this.inferFun(e.params, e.body, scope);
       case "let": {
         const inner = scope.child();
         if (e.pat.p === "var") {
@@ -646,32 +650,14 @@ class Checker {
         return this.infer(e.body, inner);
       }
       case "letstar": {
-        if (e.deferred) {
-          Object.assign(e, resolveLetStar(e, this.letStarProjects(scope, e.span)));
-          return this.inferInner(e, scope);
-        }
-        if (e.ands.length > 0) throw new MossError("'and*' needs library binding operators (not --builtin-binders)", e.ands[0]!.value.span);
-        const vt = this.infer(e.value, scope);
-        const t = tvar(this.level);
-        this.expect(e.value.span, vt, tComp(t), "The right-hand side of 'let*'");
-        this.checkLetStarPat(e.pat);
-        const inner = scope.child();
-        this.bindPat(e.pat, t, inner, tVal);
-        const bt = this.infer(e.body, inner);
-        this.expect(e.body.span, bt, tComp(tvar(this.level)), "The body of 'let*'");
-        return bt;
+        // Desugaring leaves only tuple-pattern `let*`, whose meaning depends on the operator in scope.
+        if (!e.deferred) throw new Error("let* should have been desugared");
+        Object.assign(e, resolveLetStar(e, this.letStarProjects(scope, e.span)));
+        return this.inferInner(e, scope);
       }
-      case "letplus": {
-        const inner = scope.child();
-        for (const b of e.binds) {
-          const vt = this.infer(b.value, scope);
-          const t = tvar(this.level);
-          this.expect(b.value.span, vt, tVal(t), "The right-hand side of 'let+'");
-          this.bindPat(b.pat, t, inner);
-          this.checkIrrefutable(b.pat);
-        }
-        return tComp(this.infer(e.body, inner));
-      }
+      case "letplus":
+      case "matchstar":
+        throw new Error(`${e.e} should have been desugared`);
       case "if": {
         this.expect(e.cond.span, this.infer(e.cond, scope), tBool, "The condition");
         const t = this.infer(e.then, scope);
@@ -688,18 +674,6 @@ class Checker {
           this.expect(c.body.span, this.infer(c.body, inner), r);
         }
         if (!e.generated) this.checkCases(e.cases, e.span, e.label ?? "This match");
-        return r;
-      }
-      case "matchstar": {
-        const st = tvar(this.level);
-        this.expect(e.scrut.span, this.infer(e.scrut, scope), tVal(st), "The scrutinee of 'match*'");
-        const r = tComp(tvar(this.level));
-        for (const c of e.cases) {
-          const inner = scope.child();
-          this.bindPat(c.pat, st, inner, tVal);
-          this.expect(c.body.span, this.infer(c.body, inner), r, "This 'match*' case");
-        }
-        this.checkCases(e.cases, e.span, "This 'match*'");
         return r;
       }
       case "tuple":
@@ -826,21 +800,6 @@ class Checker {
     if (t.k !== "fun") return false;
     const k = prune(t.from);
     return k.k === "fun" && prune(k.from).k === "con";
-  }
-
-  private checkLetStarPat(p: Pat): void {
-    switch (p.p) {
-      case "var":
-      case "wild":
-      case "unit":
-        return;
-      case "tuple":
-        return p.items.forEach((q) => this.checkLetStarPat(q));
-      case "annot":
-        return this.checkLetStarPat(p.pat);
-      default:
-        throw new MossError("'let*' patterns can only be variables, '_' or tuples", p.span);
-    }
   }
 
   private collectPatVars(p: Pat, out: string[] = []): string[] {

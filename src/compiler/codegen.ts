@@ -5,8 +5,8 @@
 // Known-arity functions (top-level and local `let f a b = ...`, externals)
 // are called uncurried when saturated; everything else is curried.
 //
-// Computation forms (`let*`, `let+`, `match*`) compile to runtime
-// combinators (R.sub, R.arr, R.sw) that build the incremental graph.
+// `let*`, `let+` and `match*` never reach codegen: they're desugared into
+// calls to whatever binding operators are in scope (see desugar.ts).
 
 import { type Decl, type Expr, PRELUDE, type Pat, qualify } from "./ast.ts";
 import type { Checked } from "./typecheck.ts";
@@ -77,21 +77,28 @@ class Gen {
     return js;
   }
 
+  /** Package runtime specifier -> import alias (`R1`, `R2`, ...). The core runtime is `R`. */
+  private runtimeAliases = new Map<string, string>();
+
+  private runtimeOf(d: Decl): string {
+    const spec = this.checked.program.runtimes?.[this.modOf(d)];
+    if (spec === undefined) return "R";
+    let alias = this.runtimeAliases.get(spec);
+    if (!alias) this.runtimeAliases.set(spec, (alias = `R${this.runtimeAliases.size + 1}`));
+    return alias;
+  }
+
   module(runtimeImport: string): string {
     const env = new Env(null);
     const { decls, entry } = this.checked.program;
-    let app: string | null = null;
-    for (const d of decls) {
-      const a = this.decl(d, env);
-      if (a) app = a;
-    }
+    for (const d of decls) this.decl(d, env);
     // `main` of the entry module is the program's entry point for `moss run`.
     const main = entry ? this.globals.get(qualify(entry, "main")) : undefined;
     return [
       `import * as R from ${JSON.stringify(runtimeImport)};`,
+      ...[...this.runtimeAliases].map(([spec, alias]) => `import * as ${alias} from ${JSON.stringify(spec)};`),
       ...this.header,
       ...this.body,
-      `export const app = ${app ?? "undefined"};`,
       `export const main = ${main ? main.curried ?? main.js : "undefined"};`,
       "",
     ].join("\n");
@@ -103,7 +110,7 @@ class Gen {
 
   // -- declarations -----------------------------------------------------------
 
-  private decl(d: Decl, env: Env): string | null {
+  private decl(d: Decl, env: Env): void {
     switch (d.d) {
       case "type":
         if (d.def.kind === "variant") {
@@ -119,15 +126,15 @@ class Gen {
             this.ctorJs.set(qualify(this.modOf(d), c.name), { js, index });
           });
         }
-        return null;
+        return;
       case "external": {
         let arity = 0;
         for (let t = d.type; t.t === "fun"; t = t.to) arity++;
-        this.globals.set(qualify(this.modOf(d), d.name), { js: `R.${d.js}`, arity: arity > 1 ? arity : 0 });
-        return null;
+        this.globals.set(qualify(this.modOf(d), d.name), { js: `${this.runtimeOf(d)}.${d.js}`, arity: arity > 1 ? arity : 0 });
+        return;
       }
       case "open":
-        return null;
+        return;
       case "let": {
         const q = qualify(this.modOf(d), d.name);
         const js = this.globalName(q);
@@ -148,14 +155,7 @@ class Gen {
           this.body.push(st.length ? `const ${js} = (() => {\n${st.join("\n")}\nreturn ${v};\n})();` : `const ${js} = ${v};`);
           this.globals.set(q, { js, arity: 0 });
         }
-        return null;
-      }
-      case "app": {
-        const st: string[] = [];
-        const v = this.expr(d.expr, env, st);
-        if (st.length === 0) return v;
-        this.body.push(`const $app = (() => {\n${st.join("\n")}\nreturn ${v};\n})();`);
-        return "$app";
+        return;
       }
     }
   }
@@ -301,24 +301,10 @@ class Gen {
       }
       case "let":
         return this.letExpr(e, env, st);
-      case "letstar": {
-        const inner = env.child();
-        const pre: string[] = [];
-        const param = this.bindValPat(e.pat, inner, pre);
-        const c = this.expr(e.value, env, st);
-        const body = [...pre];
-        const v = this.expr(e.body, inner, body);
-        return `R.sub(${c}, (${param}) => {\n${body.join("\n")}\nreturn ${v};\n})`;
-      }
-      case "letplus": {
-        const inner = env.child();
-        const inputs = e.binds.map((b) => this.expr(b.value, env, st));
-        const pre: string[] = [];
-        const params = e.binds.map((b) => this.bindParam(b.pat, inner, pre));
-        const body = [...pre];
-        const v = this.expr(e.body, inner, body);
-        return `R.arr([${inputs.join(", ")}], (${params.join(", ")}) => {\n${body.join("\n")}\nreturn ${v};\n})`;
-      }
+      case "letstar":
+      case "letplus":
+      case "matchstar":
+        throw new Error(`codegen: ${e.e} should have been desugared`);
       case "if": {
         const c = this.expr(e.cond, env, st);
         const s1: string[] = [];
@@ -332,26 +318,6 @@ class Gen {
       }
       case "match":
         return this.match(e, env, st);
-      case "matchstar": {
-        const scrut = this.expr(e.scrut, env, st);
-        const matchers: string[] = [];
-        const branches: string[] = [];
-        for (const c of e.cases) {
-          const tests = this.patTests(c.pat, "x");
-          const binds = this.patBinds(c.pat, "x");
-          matchers.push(`(x) => ${tests.length ? `${tests.join(" && ")} ? ` : ""}[${binds.map(([, a]) => a).join(", ")}]${tests.length ? " : null" : ""}`);
-          const inner = env.child();
-          const body: string[] = [];
-          binds.forEach(([name], i) => {
-            const v = this.fresh(name);
-            inner.set(name, { js: v, arity: 0 });
-            body.push(`const ${v} = b[${i}];`);
-          });
-          const v = this.expr(c.body, inner, body);
-          branches.push(`(b) => {\n${body.join("\n")}\nreturn ${v};\n}`);
-        }
-        return `R.sw(${scrut}, [${matchers.join(", ")}], [${branches.join(", ")}])`;
-      }
       case "tuple":
         return `[${e.items.map((i) => this.expr(i, env, st)).join(", ")}]`;
       case "list":
@@ -372,32 +338,6 @@ class Gen {
       case "annot":
         return this.expr(e.expr, env, st);
     }
-  }
-
-  /** A `let*` pattern binds vals; tuple components become projection nodes. */
-  private bindValPat(p: Pat, env: Env, st: string[]): string {
-    while (p.p === "annot") p = p.pat;
-    if (p.p === "var") {
-      const js = this.fresh(p.name);
-      env.set(p.name, { js, arity: 0 });
-      return js;
-    }
-    const js = this.fresh("v");
-    const go = (p: Pat, acc: string): void => {
-      while (p.p === "annot") p = p.pat;
-      if (p.p === "var") {
-        const v = this.fresh(p.name);
-        env.set(p.name, { js: v, arity: 0 });
-        st.push(`const ${v} = ${acc};`);
-      } else if (p.p === "tuple") {
-        const t = p.items.some((q) => q.p !== "wild") ? this.atomize(acc, st, "v") : acc;
-        p.items.forEach((q, i) => {
-          if (q.p !== "wild") go(q, `R.proj(${t}, ${i})`);
-        });
-      }
-    };
-    go(p, js);
-    return js;
   }
 
   private wrapperFor(b: Binding): string {

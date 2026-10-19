@@ -10,30 +10,27 @@ import { type Checked, typecheck } from "./typecheck.ts";
 export { MossError, formatError } from "./errors.ts";
 
 export interface CompileOptions {
-  /** Module specifier the generated code imports the runtime from. */
+  /** Module specifier the generated code imports the core runtime from. */
   runtimeImport?: string;
-  /** Require an `app` declaration (true for builds, false for `check`). */
-  requireApp?: boolean;
-  /** Require a `main : unit effect` in the entry module (for `moss run`). */
+  /** Exports of package runtimes (by `ModuleSource.runtime`), to check their externals. */
+  runtimeExports?: Record<string, Record<string, unknown>>;
+  /** Require a `main : unit effect` in the entry module (for `moss run` and builds). */
   requireMain?: boolean;
   /** Called with each non-fatal diagnostic (e.g. unused match cases). */
   onWarning?: (w: MossError) => void;
-  /**
-   * "library" (default): `let*`/`let+`/`and+`/`and*`/`match*` call the
-   * binding operators in scope. "builtin": the compiler's own typing and
-   * codegen for vals and computations (kept to check equivalence).
-   */
-  binders?: Binders;
   /** Finds the entry module's dependencies; the standard library is always available. */
   loader?: Loader;
 }
-
-export type Binders = "library" | "builtin";
 
 export interface ModuleSource {
   /** Shown in diagnostics. */
   file: string;
   source: string;
+  /**
+   * JS module implementing this module's externals (a package's runtime).
+   * Omitted: the core Moss runtime.
+   */
+  runtime?: string;
 }
 
 /** Finds a module's source by module name (`Todo_utils` -> todo_utils.moss), or undefined. */
@@ -164,9 +161,6 @@ function dependencies(decls: Decl[]): Map<string, Span> {
         d.params.forEach(pat);
         expr(d.body);
         break;
-      case "app":
-        expr(d.expr);
-        break;
       case "external":
         ty(d.type);
         break;
@@ -186,8 +180,14 @@ function dependencies(decls: Decl[]): Map<string, Span> {
  */
 function loadProgram(src: string, file: string, loader: Loader | undefined): Program {
   const entry = moduleNameOf(file);
-  const find = (m: string): ModuleSource | undefined => (m === entry ? { file, source: src } : (loader?.(m) ?? stdlib(m)));
+  const find = (m: string): ModuleSource | undefined => {
+    if (m === entry) return { file, source: src };
+    // The implicitly opened Prelude always comes from the standard library.
+    if (m === PRELUDE) return stdlib(m);
+    return loader?.(m) ?? stdlib(m);
+  };
   const decls: Decl[] = [];
+  const runtimes: Record<string, string> = {};
   const done = new Set<string>();
   const visiting: string[] = [];
 
@@ -206,37 +206,27 @@ function loadProgram(src: string, file: string, loader: Loader | undefined): Pro
     visiting.pop();
     done.add(m);
     for (const d of own) decls.push({ ...d, mod: m });
+    if (s.runtime) runtimes[m] = s.runtime;
   };
 
   visit(PRELUDE);
   visit(entry);
-  return { decls, entry };
+  return { decls, entry, runtimes };
 }
 
-export function check(src: string, file = "main.moss", binders: Binders = "library", loader?: Loader): Checked {
+export function check(src: string, file = "main.moss", loader?: Loader): Checked {
   const program = loadProgram(src, file, loader);
-  if (binders === "library") program.decls = program.decls.map(desugarDecl);
+  program.decls = program.decls.map((d) => (d.d === "let" ? { ...d, body: desugar(d.body) } : d));
   return typecheck(program);
-}
-
-function desugarDecl(d: Decl): Decl {
-  switch (d.d) {
-    case "let":
-      return { ...d, body: desugar(d.body) };
-    case "app":
-      return { ...d, expr: desugar(d.expr) };
-    default:
-      return d;
-  }
 }
 
 /**
  * An external must name a runtime export, and a function-typed external must
  * take exactly as many (uncurried) arguments as its type has arrows.
  */
-function checkExternal(d: Decl & { d: "external" }): void {
-  const impl = (Runtime as Record<string, unknown>)[d.js];
-  if (impl === undefined) throw new MossError(`external '${d.name}': the runtime has no export named "${d.js}"`, d.span);
+function checkExternal(d: Decl & { d: "external" }, exports: Record<string, unknown>, runtime: string): void {
+  const impl = exports[d.js];
+  if (impl === undefined) throw new MossError(`external '${d.name}': the ${runtime} has no export named "${d.js}"`, d.span);
   let arity = 0;
   for (let t = d.type; t.t === "fun"; t = t.to) arity++;
   if (arity === 0) return; // a value (or a function used as a value)
@@ -247,14 +237,15 @@ function checkExternal(d: Decl & { d: "external" }): void {
 }
 
 export function compile(src: string, file = "main.moss", opts: CompileOptions = {}): string {
-  const checked = check(src, file, opts.binders, opts.loader);
+  const checked = check(src, file, opts.loader);
   for (const w of checked.warnings) opts.onWarning?.(w);
-  for (const d of checked.program.decls) if (d.d === "external") checkExternal(d);
-  const apps = checked.program.decls.filter((d) => d.d === "app");
-  if (opts.requireApp !== false && apps.length === 0) {
-    throw new MossError("no 'app' declaration: add e.g. 'app page' at the end of the file", undefined);
+  const runtimes = checked.program.runtimes ?? {};
+  for (const d of checked.program.decls) {
+    if (d.d !== "external") continue;
+    const spec = runtimes[d.mod!];
+    if (spec === undefined) checkExternal(d, Runtime as Record<string, unknown>, "runtime");
+    else if (opts.runtimeExports?.[spec]) checkExternal(d, opts.runtimeExports[spec]!, `runtime ${spec}`);
   }
-  if (apps.length > 1) throw new MossError("more than one 'app' declaration", apps[1]!.span);
   const { entry } = checked.program;
   if (opts.requireMain && !checked.program.decls.some((d) => d.d === "let" && d.name === "main" && d.mod === entry)) {
     throw new MossError(`no 'main' in ${file}: define e.g. 'let main = Effect.print "hello"'`, undefined);

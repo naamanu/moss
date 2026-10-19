@@ -1,0 +1,5 @@
+{
+  "name": "rhizoid",
+  "src": "src",
+  "runtime": "runtime/index.ts"
+}

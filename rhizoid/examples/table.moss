@@ -8,6 +8,8 @@
    off-screen rows via `content-visibility`.
    Open with ?debug to log per-frame stabilize/patch timings. *)
 
+open Rhizoid
+
 type row = { id : int; name : string; price : float; change : float; volume : int }
 
 type model = { seed : int; rows : (int, row) map; ticks : int; rate : int; running : bool }
@@ -52,7 +54,7 @@ let reduce m action =
   | Slower -> { m with rate = Int.max 1 (m.rate / 2) }
   | Toggle_running -> { m with running = not m.running }
 
-component row_view (r : row val) =
+let row_view (r : row val) =
   let* expanded, set_expanded = state false in
   let+ r = r and expanded = expanded and set_expanded = set_expanded in
   div [key (show r.id); class_ (if r.change >= 0.0 then "row up" else "row down"); on_click (set_expanded (not expanded))] [
@@ -63,7 +65,7 @@ component row_view (r : row val) =
     span [class_ "num"] [text (if expanded then "vol " ^ show r.volume else "…")]
   ]
 
-component page =
+let page =
   let* model, dispatch = state_machine initial reduce in
   let* tick = let+ dispatch = dispatch in dispatch Tick in
   let* _ = every 16 tick in
@@ -89,4 +91,4 @@ component page =
     body
   ]
 
-app page
+let main = start page

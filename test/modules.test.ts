@@ -16,7 +16,7 @@ const project = (files: Record<string, string>): Loader => (m) => {
 
 function errorOf(src: string, files: Record<string, string> = {}): string {
   try {
-    check(src, "main.moss", "library", project(files));
+    check(src, "main.moss", project(files));
   } catch (e) {
     if (e instanceof MossError) return formatError(e);
     throw e;
@@ -27,7 +27,7 @@ function errorOf(src: string, files: Record<string, string> = {}): string {
 /** Compile and evaluate; return the entry module's values by name. */
 async function evalMoss(src: string, files: Record<string, string>, names: string[]): Promise<any[]> {
   const R = await import("../src/runtime/index.ts");
-  const js = compile(`${src}\napp (return (const (text "")))`, "main.moss", { loader: project(files) });
+  const js = compile(src, "main.moss", { loader: project(files) });
   const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
   return new Function("R", `${body}\nreturn [${names.map((n) => `$Main_${n}`).join(", ")}];`)(R);
 }
@@ -79,6 +79,11 @@ let moved = (move Shapes.origin).x
   it("lets a project module shadow a standard library module", async () => {
     const [v] = await evalMoss("let v = List.answer", { List: "let answer = 42" }, ["v"]);
     expect(v).toBe(42);
+  });
+
+  it("never lets a project file replace the Prelude", async () => {
+    const [v] = await evalMoss("let v = not false", { Prelude: "let not x = 42" }, ["v"]);
+    expect(v).toBe(true);
   });
 
   it("requires main to be a unit effect", () => {

@@ -1,4 +1,15 @@
-import { BINDING_OPS, type Case, type Decl, type Expr, type LetPlusBind, type Pat, type Program, type TypeDef, type TypeExpr } from "./ast.ts";
+import {
+  type Attr,
+  BINDING_OPS,
+  type Case,
+  type Decl,
+  type Expr,
+  type LetPlusBind,
+  type Pat,
+  type Program,
+  type TypeDef,
+  type TypeExpr,
+} from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
 import { lex, type Token } from "./lexer.ts";
 
@@ -93,12 +104,7 @@ class Parser {
       const name = this.expectKind("uident", "a module name").text;
       return { d: "open", name, span: this.from(start) };
     }
-    if (this.eat("app")) {
-      const expr = this.expr();
-      return { d: "app", expr, span: this.from(start) };
-    }
-    const component = this.is("component");
-    if (component || this.is("let")) {
+    if (this.is("let")) {
       this.i++;
       const rec = this.eat("rec");
       const name = this.valueName("a name").text;
@@ -107,9 +113,9 @@ class Parser {
       if (rec && params.length === 0) this.fail("'let rec' must define a function", start);
       this.expect("=");
       const body = this.expr();
-      return { d: "let", rec, name, params, body, component, span: this.from(start) };
+      return { d: "let", rec, name, params, body, span: this.from(start) };
     }
-    this.fail(`expected a declaration (let, component, type, external, open, app) but found '${this.tok.text}'`);
+    this.fail(`expected a declaration (let, type, external, open) but found '${this.tok.text}'`);
   }
 
   private typeDecl(start: Span): Decl {
@@ -128,7 +134,22 @@ class Parser {
       else if (this.tok.kind === "uident" || this.is("|")) def = this.variantDef();
       else def = { kind: "alias", type: this.type() };
     }
-    return { d: "type", name, params, def, span: this.from(start) };
+    const span = this.from(start);
+    return { d: "type", name, params, def, attrs: this.attrs(), span };
+  }
+
+  /** `[@@name]` / `[@@name "payload"]`, any number of them. */
+  private attrs(): Attr[] {
+    const out: Attr[] = [];
+    while (this.is("[") && this.peek().text === "@" && this.peek(2).text === "@") {
+      const start = this.tok.span;
+      this.i += 3;
+      const name = this.expectKind("lident", "an attribute name").text;
+      const arg = this.tok.kind === "string" ? this.toks[this.i++]!.text : null;
+      this.expect("]");
+      out.push({ name, arg, span: this.from(start) });
+    }
+    return out;
   }
 
   private recordDef(): TypeDef {
@@ -501,6 +522,14 @@ class Parser {
   private atom(ctorArg = true): Expr {
     const t = this.tok;
     const span = t.span;
+    // A qualified binding operator: `Rhizoid.( let* )`
+    if (t.kind === "uident" && this.peekIs(".") && this.peek(2).text === "(") {
+      const op = this.peek(3);
+      if (op.kind === "kw" && (BINDING_OPS as readonly string[]).includes(op.text) && this.peek(4).text === ")") {
+        this.i += 5;
+        return { e: "var", name: `${t.text}.${op.text}`, span: this.from(span) };
+      }
+    }
     switch (t.kind) {
       case "int":
         this.i++;

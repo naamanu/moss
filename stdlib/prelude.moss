@@ -1,36 +1,12 @@
-(* The Prelude: opened implicitly in every module. Its names are global.
-   Core types, basic functions, and (until they move to the Rhizoid library)
-   computations, binding operators and html. *)
+(* The Prelude: opened implicitly in every module. Its names are global. *)
 
-type html
-type attr
-type 'a effect
+type 'a effect [@@opaque]
 type ('k, 'v) map
 type 'a option = None | Some of 'a
 
-(* ---- binding operators (move to the Rhizoid library in step 3) ---- *)
-external ( let* ) : 'a comp -> ('a val -> 'b comp) -> 'b comp = "let_star"
-external ( let+ ) : 'a val -> ('a -> 'b) -> 'b comp = "let_plus"
-external ( and+ ) : 'a val -> 'b val -> ('a * 'b) val = "and_plus"
-external ( and* ) : 'a comp -> 'b comp -> ('a * 'b) comp = "and_star"
-external ( match* ) : 'a val -> ('a -> int) -> (int -> 'a val -> 'r comp) -> 'r comp = "match_star"
-
-(* ---- computations ---- *)
-external state : 'a -> ('a * ('a -> unit effect)) comp = "state"
-external state_machine : 'm -> ('m -> 'act -> 'm) -> ('m * ('act -> unit effect)) comp = "state_machine"
-external assoc : ('k, 'v) map val -> ('k -> 'v val -> 'r comp) -> ('k, 'r) map comp = "assoc"
-external return : 'a val -> 'a comp = "ret"
-external const : 'a -> 'a val = "cnst"
-external every : int -> unit effect val -> unit comp = "every"
-
 (* ---- async ---- *)
-type 'a task
+type 'a task [@@opaque]
 type 'a remote = Loading | Loaded of 'a | Failed of string
-
-(* Load data for the current key. A new key aborts the previous request,
-   stale responses are dropped, and leaving the enclosing match* branch or
-   assoc entry aborts the request in flight. *)
-external resource : 'k val -> ('k -> 'a task) -> 'a remote comp = "resource"
 
 (* ---- basics ---- *)
 external show : int -> string = "show"
@@ -39,45 +15,3 @@ let not b = if b then false else true
 let fst p = match p with (a, _) -> a
 let snd p = match p with (_, b) -> b
 let id x = x
-
-(* ---- html ---- *)
-external el : string -> attr list -> html list -> html = "Html_el"
-external text : string -> html = "Html_text"
-
-external attr : string -> string -> attr = "Attr_attr"
-external bool_attr : string -> bool -> attr = "Attr_bool"
-external class_ : string -> attr = "Attr_class"
-external key : string -> attr = "Attr_key"
-external value : string -> attr = "Attr_value"
-external checked : bool -> attr = "Attr_checked"
-external style : string -> attr = "Attr_style"
-external on_click : unit effect -> attr = "Attr_on_click"
-external on_dblclick : unit effect -> attr = "Attr_on_dblclick"
-external on_input : (string -> unit effect) -> attr = "Attr_on_input"
-external on_check : (bool -> unit effect) -> attr = "Attr_on_check"
-external on_keydown : (string -> unit effect) -> attr = "Attr_on_keydown"
-external on_enter : unit effect -> attr = "Attr_on_enter"
-
-let placeholder s = attr "placeholder" s
-let type_ s = attr "type" s
-let id_ s = attr "id" s
-
-let div attrs children = el "div" attrs children
-let span attrs children = el "span" attrs children
-let p attrs children = el "p" attrs children
-let h1 attrs children = el "h1" attrs children
-let h2 attrs children = el "h2" attrs children
-let button attrs children = el "button" attrs children
-let input attrs = el "input" attrs []
-let label attrs children = el "label" attrs children
-let ul attrs children = el "ul" attrs children
-let li attrs children = el "li" attrs children
-let section attrs children = el "section" attrs children
-let header attrs children = el "header" attrs children
-let footer attrs children = el "footer" attrs children
-let table attrs children = el "table" attrs children
-let thead attrs children = el "thead" attrs children
-let tbody attrs children = el "tbody" attrs children
-let tr attrs children = el "tr" attrs children
-let td attrs children = el "td" attrs children
-let th attrs children = el "th" attrs children

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { MossError, check, compile, formatError } from "../src/compiler/compile.ts";
+import { readFileSync } from "node:fs";
+import { type Loader, MossError, check, compile, formatError } from "../src/compiler/compile.ts";
 import { parse } from "../src/compiler/parser.ts";
 import { showType } from "../src/compiler/types.ts";
 
+const UI = readFileSync(new URL("./fixtures/ui.moss", import.meta.url), "utf8");
+/** Makes the test-double UI library (fixtures/ui.moss) available as module `Ui`. */
+const withUi: Loader = (m) => (m === "Ui" ? { file: "ui.moss", source: UI } : undefined);
+
 /** Type of a top-level binding, as printed by the checker. */
 function typeOf(src: string, name: string): string {
-  const c = check(src, "t.moss");
+  const c = check(src, "t.moss", withUi);
   const d = c.program.decls.find((d) => d.d === "let" && d.name === name);
   if (!d || d.d !== "let") throw new Error("no decl");
   return showType(d.body.ty!);
@@ -13,7 +18,7 @@ function typeOf(src: string, name: string): string {
 
 function errorOf(src: string): string {
   try {
-    check(src, "t.moss");
+    check(src, "t.moss", withUi);
   } catch (e) {
     if (e instanceof MossError) return formatError(e);
     throw e;
@@ -55,13 +60,13 @@ describe("type checker", () => {
   });
 
   it("types let+ and let* in the Bonsai discipline", () => {
-    expect(typeOf("let c = let* n, set = state 0 in let+ n = n in n + 1", "c")).toBe("int comp");
-    expect(typeOf("let c = let* s = state \"x\" in return s", "c")).toBe("(string * (string -> unit effect)) comp");
+    expect(typeOf("open Ui let c = let* n, set = state 0 in let+ n = n in n + 1", "c")).toBe("int comp");
+    expect(typeOf("open Ui let c = let* s = state \"x\" in return s", "c")).toBe("(string * (string -> unit effect)) comp");
   });
 
   it("rejects reading a val in pure code", () => {
-    const err = errorOf(`
-component bad =
+    const err = errorOf(`open Ui
+let bad =
   let* n, set = state 0 in
   let+ s = set in
   text (show n)
@@ -72,16 +77,19 @@ component bad =
   });
 
   it("rejects using a computation where a val is needed", () => {
-    const err = errorOf(`
-component bad =
+    const err = errorOf(`open Ui
+let bad =
   let+ n = state 0 in
   text "x"
 `);
     expect(err).toContain("let*");
   });
 
-  it("requires components to be computations", () => {
-    expect(errorOf("component c = text \"hi\"")).toContain("A component has type html");
+  it("takes error hints from type attributes", () => {
+    // `start` expects an `html comp`; the hint comes from `comp`'s [@@hint_expected].
+    expect(errorOf('open Ui let main = start (text "hi")')).toContain(
+      "hint: wrap a pure result with 'let+' (or 'return (const x)') to make a computation",
+    );
   });
 
   it("checks records, variants and exhaustive fields", () => {
@@ -97,7 +105,7 @@ component bad =
 
 describe("codegen", () => {
   async function run(src: string): Promise<any> {
-    const js = compile(`${src}\napp (return (const (text "")))`, "t.moss", { runtimeImport: "../src/runtime/index.ts" });
+    const js = compile(`${src}`, "t.moss", { runtimeImport: "../src/runtime/index.ts" });
     // Evaluate the module body with the runtime injected.
     const R = await import("../src/runtime/index.ts");
     const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
@@ -179,9 +187,9 @@ describe("exhaustiveness", () => {
   });
 
   it("checks match* too", () => {
-    const err = errorOf(`
+    const err = errorOf(`open Ui
 type mode = View | Edit | Hidden
-component c (m : mode val) =
+let c (m : mode val) =
   match* m with
   | View -> return (const (text "v"))
   | Edit -> return (const (text "e"))
@@ -202,7 +210,7 @@ describe("accepted programs behave consistently", () => {
   /** Compile `src`, evaluate it, and return top-level values by name (or the thrown message). */
   async function evalMoss(src: string, names: string[]): Promise<any[] | string> {
     const R = await import("../src/runtime/index.ts");
-    const js = compile(`${src}\napp (return (const (text "")))`, "t.moss");
+    const js = compile(`${src}`, "t.moss");
     const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
     try {
       return new Function("R", `${body}\nreturn [${names.map((n) => `$T_${n}`).join(", ")}];`)(R);
@@ -263,7 +271,7 @@ let rec_lt = { a = 2; b = 1 } < { a = 1; b = 2 }`,
   it("checks externals against the runtime", () => {
     const err = (src: string) => {
       try {
-        compile(src + "\napp (return (const (text \"\")))", "t.moss");
+        compile(src, "t.moss");
       } catch (e) {
         return (e as Error).message;
       }
@@ -302,7 +310,7 @@ let rec_lt = { a = 2; b = 1 } < { a = 1; b = 2 }`,
 describe("binding operators", () => {
   async function evalMoss(src: string, names: string[]): Promise<any[]> {
     const R = await import("../src/runtime/index.ts");
-    const js = compile(`${src}\napp (return (const (text "")))`, "t.moss");
+    const js = compile(`${src}`, "t.moss");
     const body = js.replace(/^import .*$/m, "").replace(/^export /gm, "");
     return new Function("R", `${body}\nreturn [${names.map((n) => `$T_${n}`).join(", ")}];`)(R);
   }
@@ -331,21 +339,18 @@ let ap = ( let+ ) (Some 20) (fun x -> x + 1)
   it("types and* over computations", () => {
     expect(
       typeOf(
-        "let c = let* a = state 1 and* b = state \"x\" in let+ (n, _) = a and+ (s, _) = b in show n ^ s",
+        "open Ui let c = let* a = state 1 and* b = state \"x\" in let+ (n, _) = a and+ (s, _) = b in show n ^ s",
         "c",
       ),
     ).toBe("string comp");
   });
 
   it("reports match* diagnostics once, under its own name", () => {
-    expect(errorOf("type m = A | B | C\nlet f (v : m val) = match* v with A -> return (const 1) | B -> return (const 2)")).toContain(
+    expect(errorOf("open Ui type m = A | B | C\nlet f (v : m val) = match* v with A -> return (const 1) | B -> return (const 2)")).toContain(
       "This 'match*' is not exhaustive",
     );
-    const ws = check("type m = A | B\nlet f (v : m val) = match* v with _ -> return (const 1) | A -> return (const 2)", "t.moss").warnings;
+    const ws = check("open Ui type m = A | B\nlet f (v : m val) = match* v with _ -> return (const 1) | A -> return (const 2)", "t.moss", withUi).warnings;
     expect(ws).toHaveLength(1);
   });
 
-  it("the builtin binders reject and*", () => {
-    expect(() => check("let c = let* a = state 1 and* b = state 2 in return a", "t.moss", "builtin")).toThrow("and*");
-  });
 });

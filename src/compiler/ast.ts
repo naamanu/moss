@@ -107,13 +107,26 @@ export type TypeDef =
   | { kind: "variant"; ctors: { name: string; arg: TypeExpr | null; span: Span }[] }
   | { kind: "record"; fields: { name: string; type: TypeExpr; span: Span }[] };
 
+/**
+ * `[@@name]` or `[@@name "payload"]` after a type declaration:
+ * - `[@@opaque]`: values can't be compared with `=` or `<`.
+ * - `[@@hint_found "..."]`: hint shown when a value of this type is used
+ *   where a different type was expected.
+ * - `[@@hint_expected "..."]`: hint shown when a different type is used
+ *   where this type was expected (takes precedence over `hint_found`).
+ */
+export interface Attr {
+  name: string;
+  arg: string | null;
+  span: Span;
+}
+
 /** Every declaration records the module it belongs to (set by the loader). */
 export type Decl = { mod?: string } & (
-  | { d: "type"; name: string; params: string[]; def: TypeDef; span: Span }
-  | { d: "let"; rec: boolean; name: string; params: Pat[]; body: Expr; component: boolean; span: Span }
+  | { d: "type"; name: string; params: string[]; def: TypeDef; attrs: Attr[]; span: Span }
+  | { d: "let"; rec: boolean; name: string; params: Pat[]; body: Expr; span: Span }
   | { d: "external"; name: string; type: TypeExpr; js: string; span: Span }
   | { d: "open"; name: string; span: Span }
-  | { d: "app"; expr: Expr; span: Span }
 );
 
 /** All modules' declarations, in dependency order (Prelude first, the entry module last). */
@@ -121,6 +134,8 @@ export interface Program {
   decls: Decl[];
   /** The entry module's name. */
   entry?: string;
+  /** JS module implementing the externals of each module that isn't backed by the core runtime. */
+  runtimes?: Record<string, string>;
 }
 
 /** The implicitly opened module whose names are global (unqualified). */
