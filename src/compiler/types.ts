@@ -155,6 +155,21 @@ export function instantiate(s: Scheme, level: number): Type {
   return go(s.type);
 }
 
+/** Replace type variables by `sub` (used to instantiate a type definition's parameters). */
+export function substitute(t: Type, sub: Map<TVar, Type>): Type {
+  t = prune(t);
+  switch (t.k) {
+    case "var":
+      return sub.get(t) ?? t;
+    case "con":
+      return t.args.length === 0 ? t : tcon(t.name, ...t.args.map((a) => substitute(a, sub)));
+    case "fun":
+      return tfun(substitute(t.from, sub), substitute(t.to, sub));
+    case "tuple":
+      return ttuple(t.items.map((a) => substitute(a, sub)));
+  }
+}
+
 /** Number of arrows at the top of a type (its "natural" arity). */
 export function arity(t: Type): number {
   let n = 0;

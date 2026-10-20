@@ -25,28 +25,59 @@ export function list(...xs: any[]): List<any> {
   return l;
 }
 
-/** Structural equality (`=`). nan is not equal to itself, as in IEEE and OCaml. */
-export function eq(a: any, b: any): boolean {
-  assertComparable(a, "equal");
-  assertComparable(b, "equal");
-  if (a === b) return typeof a !== "number" || a === a;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  if (Array.isArray(a)) {
-    if (a.length !== b.length) return false;
-    for (let i = 0; i < a.length; i++) if (!eq(a[i], b[i])) return false;
-    return true;
+/**
+ * Structural equality (`=`). nan is not equal to itself, as in IEEE and OCaml.
+ * The result never depends on sharing: a value is inspected even when compared
+ * with itself (so `p = p` is false if `p` contains nan, and raises if it
+ * contains a function).
+ */
+export function eq(a0: any, b0: any): boolean {
+  // Fast path for primitives (functions still go through assertComparable below).
+  const t0 = typeof a0;
+  if (t0 === "number" || t0 === "string" || t0 === "boolean" || t0 === "undefined") {
+    assertComparable(b0, "equal");
+    return a0 === b0;
   }
-  if (a instanceof PMap) {
-    if (!(b instanceof PMap) || a.size !== b.size) return false;
-    let same = true;
-    a.symmetricDiff(b, () => (same = false), eq);
-    return same;
+  // An explicit work stack instead of recursion (long lists can't overflow
+  // the JS stack), visiting components leftmost-first.
+  const work: any[] = [a0, b0];
+  while (work.length > 0) {
+    const b = work.pop();
+    const a = work.pop();
+    if (a === KEYS) {
+      // A map entry's keys: equal by the map's ordering.
+      if (compare(b[0], b[1]) !== 0) return false;
+      continue;
+    }
+    assertComparable(a, "equal");
+    assertComparable(b, "equal");
+    if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
+      if (a !== b) return false;
+      continue;
+    }
+    if (Array.isArray(a)) {
+      if (a.length !== b.length) return false;
+      for (let i = a.length - 1; i >= 0; i--) work.push(a[i], b[i]);
+      continue;
+    }
+    if (a instanceof PMap) {
+      // Entry by entry: shared subtrees must still have their values compared.
+      if (!(b instanceof PMap) || a.size !== b.size) return false;
+      const xs: [any, any][] = [];
+      const ys: [any, any][] = [];
+      a.forEach((v, k) => xs.push([k, v]));
+      b.forEach((v, k) => ys.push([k, v]));
+      for (let i = xs.length - 1; i >= 0; i--) work.push(xs[i]![1], ys[i]![1], KEYS, [xs[i]![0], ys[i]![0]]);
+      continue;
+    }
+    const keys = Object.keys(a);
+    if (keys.length !== Object.keys(b).length) return false;
+    for (let i = keys.length - 1; i >= 0; i--) work.push(a[keys[i]!], b[keys[i]!]);
   }
-  const ka = Object.keys(a);
-  if (ka.length !== Object.keys(b).length) return false;
-  for (const k of ka) if (!eq(a[k], b[k])) return false;
   return true;
 }
+
+const KEYS = Symbol("keys");
 
 export const cmp = compare;
 

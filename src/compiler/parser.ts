@@ -98,7 +98,8 @@ class Parser {
       const type = this.type();
       this.expect("=");
       const js = this.expectKind("string", "a JS name string").text;
-      return { d: "external", name, type, js, span: this.from(start) };
+      const span = this.from(start);
+      return { d: "external", name, type, js, attrs: this.attrs(), span };
     }
     if (this.eat("open")) {
       const name = this.expectKind("uident", "a module name").text;

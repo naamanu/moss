@@ -108,12 +108,20 @@ export type TypeDef =
   | { kind: "record"; fields: { name: string; type: TypeExpr; span: Span }[] };
 
 /**
- * `[@@name]` or `[@@name "payload"]` after a type declaration:
+ * `[@@name]` or `[@@name "payload"]` after a type or external declaration.
+ *
+ * On types:
  * - `[@@opaque]`: values can't be compared with `=` or `<`.
  * - `[@@hint_found "..."]`: hint shown when a value of this type is used
  *   where a different type was expected.
  * - `[@@hint_expected "..."]`: hint shown when a different type is used
  *   where this type was expected (takes precedence over `hint_found`).
+ *
+ * On a `( let* )` external:
+ * - `[@@project_with "let+"]`: its continuation receives a wrapped value
+ *   (e.g. Rhizoid's `'a val`), so tuple patterns in `let*` are projected into
+ *   one wrapped value per variable with the named operator, instead of being
+ *   matched (see desugar.ts).
  */
 export interface Attr {
   name: string;
@@ -125,7 +133,16 @@ export interface Attr {
 export type Decl = { mod?: string } & (
   | { d: "type"; name: string; params: string[]; def: TypeDef; attrs: Attr[]; span: Span }
   | { d: "let"; rec: boolean; name: string; params: Pat[]; body: Expr; span: Span }
-  | { d: "external"; name: string; type: TypeExpr; js: string; span: Span }
+  | {
+      d: "external";
+      name: string;
+      type: TypeExpr;
+      js: string;
+      attrs: Attr[];
+      span: Span;
+      /** Arity of the resolved type (aliases expanded), set by the type checker. */
+      arity?: number;
+    }
   | { d: "open"; name: string; span: Span }
 );
 

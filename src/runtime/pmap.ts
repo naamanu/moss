@@ -245,42 +245,65 @@ export function assertComparable(x: unknown, op: string): void {
  * records by their fields in declaration order (literals are emitted in that
  * order); lists element-wise with [] first; nan is smaller than every number.
  */
-export function compare(a: any, b: any): number {
-  assertComparable(a, "compare");
-  assertComparable(b, "compare");
-  if (a === b) return 0;
-  const ta = typeof a;
-  if (ta === "number") {
-    if (a !== a) return b !== b ? 0 : -1;
-    if (b !== b) return 1;
-    return a < b ? -1 : 1;
+export function compare(a0: any, b0: any): number {
+  // Fast path for the common case (int and string map keys): no work stack.
+  const t0 = typeof a0;
+  if ((t0 === "string" || t0 === "boolean" || (t0 === "number" && a0 === a0)) && typeof b0 === t0 && b0 === b0) {
+    return a0 < b0 ? -1 : a0 > b0 ? 1 : 0;
   }
-  if (ta === "string" || ta === "boolean") return a < b ? -1 : a > b ? 1 : 0;
-  if (Array.isArray(a)) {
-    const n = Math.min(a.length, b.length);
-    for (let i = 0; i < n; i++) {
-      const c = compare(a[i], b[i]);
-      if (c !== 0) return c;
+  // An explicit work stack instead of recursion, so long lists can't overflow
+  // the JS stack. Pairs are popped leftmost-first; a TIE entry carries the
+  // result to use if everything before it compared equal (an array's length).
+  const work: any[] = [a0, b0];
+  while (work.length > 0) {
+    const b = work.pop();
+    const a = work.pop();
+    if (a === TIE) {
+      if (b !== 0) return b;
+      continue;
     }
-    return a.length - b.length;
-  }
-  if (a === null || b === null) return a === null ? (b === null ? 0 : -1) : 1;
-  if (a === undefined || b === undefined) return 0; // unit
-  if (a instanceof PMap) {
-    const xs: [any, any][] = [];
-    const ys: [any, any][] = [];
-    a.forEach((v, k) => xs.push([k, v]));
-    (b as PMap<any, any>).forEach((v, k) => ys.push([k, v]));
-    return compare(xs, ys);
-  }
-  if ("$" in a) {
-    if (a.$ !== b.$) return a.i - b.i;
-    return compare(a.v, b.v);
-  }
-  // Records and cons cells: fields in insertion (= declaration) order.
-  for (const k in a) {
-    const c = compare(a[k], b[k]);
-    if (c !== 0) return c;
+    assertComparable(a, "compare");
+    assertComparable(b, "compare");
+    const ta = typeof a;
+    if (ta === "number") {
+      if (a !== a) {
+        if (b !== b) continue;
+        return -1;
+      }
+      if (b !== b) return 1;
+      if (a !== b) return a < b ? -1 : 1;
+      continue;
+    }
+    if (ta === "string" || ta === "boolean") {
+      if (a !== b) return a < b ? -1 : 1;
+      continue;
+    }
+    if (a === b && (a === null || a === undefined)) continue;
+    if (Array.isArray(a)) {
+      work.push(TIE, a.length - b.length);
+      for (let i = Math.min(a.length, b.length) - 1; i >= 0; i--) work.push(a[i], b[i]);
+      continue;
+    }
+    if (a === null || b === null) return a === null ? -1 : 1;
+    if (a === undefined || b === undefined) continue; // unit
+    if (a instanceof PMap) {
+      const xs: [any, any][] = [];
+      const ys: [any, any][] = [];
+      a.forEach((v, k) => xs.push([k, v]));
+      (b as PMap<any, any>).forEach((v, k) => ys.push([k, v]));
+      work.push(xs, ys);
+      continue;
+    }
+    if ("$" in a) {
+      if (a.$ !== b.$) return a.i - b.i;
+      work.push(a.v, b.v);
+      continue;
+    }
+    // Records and cons cells: fields in insertion (= declaration) order.
+    const keys = Object.keys(a);
+    for (let i = keys.length - 1; i >= 0; i--) work.push(a[keys[i]!], b[keys[i]!]);
   }
   return 0;
 }
+
+const TIE = Symbol("tie");

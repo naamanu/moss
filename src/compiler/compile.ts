@@ -1,5 +1,5 @@
 import * as Runtime from "../runtime/index.ts";
-import { type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr } from "./ast.ts";
+import { type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr, qualify } from "./ast.ts";
 import { codegen } from "./codegen.ts";
 import { desugar } from "./desugar.ts";
 import { MossError, type Span, sources } from "./errors.ts";
@@ -224,11 +224,9 @@ export function check(src: string, file = "main.moss", loader?: Loader): Checked
  * An external must name a runtime export, and a function-typed external must
  * take exactly as many (uncurried) arguments as its type has arrows.
  */
-function checkExternal(d: Decl & { d: "external" }, exports: Record<string, unknown>, runtime: string): void {
+function checkExternal(d: Decl & { d: "external" }, arity: number, exports: Record<string, unknown>, runtime: string): void {
   const impl = exports[d.js];
   if (impl === undefined) throw new MossError(`external '${d.name}': the ${runtime} has no export named "${d.js}"`, d.span);
-  let arity = 0;
-  for (let t = d.type; t.t === "fun"; t = t.to) arity++;
   if (arity === 0) return; // a value (or a function used as a value)
   if (typeof impl !== "function") throw new MossError(`external '${d.name}': runtime export "${d.js}" is not a function`, d.span);
   if (impl.length !== arity) {
@@ -243,8 +241,10 @@ export function compile(src: string, file = "main.moss", opts: CompileOptions = 
   for (const d of checked.program.decls) {
     if (d.d !== "external") continue;
     const spec = runtimes[d.mod!];
-    if (spec === undefined) checkExternal(d, Runtime as Record<string, unknown>, "runtime");
-    else if (opts.runtimeExports?.[spec]) checkExternal(d, opts.runtimeExports[spec]!, `runtime ${spec}`);
+    // Arity from the resolved type (aliases expanded), the same number codegen calls with.
+    const arity = d.arity!;
+    if (spec === undefined) checkExternal(d, arity, Runtime as Record<string, unknown>, "runtime");
+    else if (opts.runtimeExports?.[spec]) checkExternal(d, arity, opts.runtimeExports[spec]!, `runtime ${spec}`);
   }
   const { entry } = checked.program;
   if (opts.requireMain && !checked.program.decls.some((d) => d.d === "let" && d.name === "main" && d.mod === entry)) {

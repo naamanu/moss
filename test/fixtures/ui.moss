@@ -8,7 +8,8 @@ type 'a comp [@@opaque]
   [@@hint_expected "wrap a pure result with 'let+' (or 'return (const x)') to make a computation"]
 type html [@@opaque]
 
-external ( let* ) : 'a comp -> ('a val -> 'b comp) -> 'b comp = "let_star"
+(* Its continuation receives a val, so tuple patterns are projected with let+. *)
+external ( let* ) : 'a comp -> ('a val -> 'b comp) -> 'b comp = "let_star" [@@project_with "let+"]
 external ( let+ ) : 'a val -> ('a -> 'b) -> 'b comp = "let_plus"
 external ( and+ ) : 'a val -> 'b val -> ('a * 'b) val = "and_plus"
 external ( and* ) : 'a comp -> 'b comp -> ('a * 'b) comp = "and_star"

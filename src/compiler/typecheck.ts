@@ -6,12 +6,13 @@
 // Attributes on type declarations ([@@opaque], [@@hint_found],
 // [@@hint_expected]) supply comparability and error hints.
 
-import { BINDING_OPS, type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr, qualify } from "./ast.ts";
+import { type Attr, BINDING_OPS, type Decl, type Expr, PRELUDE, type Pat, type Program, type TypeExpr, qualify } from "./ast.ts";
 import { MossError, type Span } from "./errors.ts";
 import { resolveLetStar } from "./desugar.ts";
 import { checkMatch, type VariantCtor } from "./exhaustive.ts";
 import {
   type Scheme,
+  type TVar,
   type Type,
   TypePrinter,
   UnifyError,
@@ -34,35 +35,50 @@ import {
   ttuple,
   tvar,
   printContext,
+  substitute,
   typeName,
   unify,
 } from "./types.ts";
 
+/**
+ * A type definition, resolved once where it's declared (so names in it mean
+ * what they meant in its own module, opens included). Its parts are written
+ * in terms of `vars`, one per parameter, and are instantiated by substitution.
+ */
 interface TypeInfo {
   params: string[];
+  vars: TVar[];
   def: Decl & { d: "type" };
+  /** An abbreviation's expansion; undefined while it's being declared (to catch cycles). */
+  alias?: Type;
+  /** A variant's constructor argument types, in declaration order. */
+  ctorArgs?: (Type | null)[];
+  /** A record's field types, in declaration order. */
+  fields?: Map<string, Type>;
 }
 
 export interface CtorInfo {
   typeName: string;
-  params: string[];
-  arg: TypeExpr | null;
+  /** The argument type, in terms of the type definition's `vars`. */
+  arg: Type | null;
   /** Position within its type's constructor list. */
   index: number;
 }
 
-export interface GlobalInfo {
-  kind: "external" | "let";
-  /** JS name of the external, if any. */
-  js?: string;
-  arity: number;
+/**
+ * A module-level value. Everything known about a binding lives here, so
+ * redefining the name (shadowing) replaces all of it at once.
+ */
+interface ValueInfo {
+  scheme: Scheme;
+  /** Attributes of an external (e.g. [@@project_with]); none for `let`. */
+  attrs: Attr[];
 }
 
 export interface Checked {
   program: Program;
   /** Each module's own top-level definitions (short name -> qualified name). */
   exports: Map<string, ModEnv>;
-  globals: Map<string, GlobalInfo>;
   ctors: Map<string, CtorInfo>;
   warnings: MossError[];
 }
@@ -115,8 +131,8 @@ class Checker {
   // Global tables, keyed by qualified name (`Todo.todo`; Prelude names are unqualified).
   private types = new Map<string, TypeInfo>();
   private ctors = new Map<string, CtorInfo>();
-  private values = new Map<string, Scheme>();
-  private globals = new Map<string, GlobalInfo>();
+  /** The current binding of each module-level name (later definitions replace earlier ones). */
+  private values = new Map<string, ValueInfo>();
   /** Each module's own definitions. */
   private exports = new Map<string, ModEnv>();
   /** The module being checked, and the names visible in it (own + opened + Prelude). */
@@ -125,8 +141,6 @@ class Checker {
   private entry: string | undefined;
   private level = 0;
   private warnings: MossError[] = [];
-  /** Type abbreviations currently being expanded (to reject cycles). */
-  private expanding = new Set<string>();
   /** Operand types of `=`, `<`, ... in the current declaration, checked once it's fully inferred. */
   private comparisons: { span: Span; op: string; ty: Type }[] = [];
 
@@ -158,14 +172,10 @@ class Checker {
         const info = this.types.get(t.name);
         if (!info || seen.has(t.name)) return null;
         seen.add(t.name);
-        const vars = new Map<string, Type>(info.params.map((p, i) => [p, t.args[i]!]));
-        const def = info.def.def;
-        const parts =
-          def.kind === "variant" ? def.ctors.flatMap((c) => (c.arg ? [c.arg] : []))
-          : def.kind === "record" ? def.fields.map((f) => f.type)
-          : [];
-        for (const te of parts) {
-          const r = this.incomparable(this.convert(te, vars, false), seen);
+        const sub = new Map<TVar, Type>(info.vars.map((v, i) => [v, t.args[i]!]));
+        const parts = [...(info.ctorArgs ?? []).filter((a): a is Type => a !== null), ...(info.fields?.values() ?? [])];
+        for (const part of parts) {
+          const r = this.incomparable(substitute(part, sub), seen);
           if (r) return `${r} (inside '${typeName(t.name)}')`;
         }
         return null;
@@ -225,7 +235,7 @@ class Checker {
       if (m !== this.mod) this.enterModule(m);
       this.decl(d, new Scope(null));
     }
-    return { program, exports: this.exports, globals: this.globals, ctors: this.ctors, warnings: this.warnings };
+    return { program, exports: this.exports, ctors: this.ctors, warnings: this.warnings };
   }
 
   /** Start checking module `m`: it sees Prelude's names, then its own. */
@@ -267,7 +277,7 @@ class Checker {
       if (local) return { scheme: local };
     }
     const q = this.resolve("values", name, span, "value");
-    return q === undefined ? undefined : { scheme: this.values.get(q)!, resolved: q };
+    return q === undefined ? undefined : { scheme: this.values.get(q)!.scheme, resolved: q };
   }
 
   /** The record type a field belongs to: from the target's type when known, else by name. */
@@ -356,14 +366,8 @@ class Checker {
           throw new MossError(`type '${te.name}' expects ${info.params.length} argument(s), got ${args.length}`, te.span);
         }
         if (info.def.def.kind === "alias") {
-          if (this.expanding.has(q)) throw new MossError(`type abbreviation '${te.name}' is cyclic`, te.span);
-          this.expanding.add(q);
-          try {
-            const sub = new Map<string, Type>(info.params.map((p, i) => [p, args[i]!]));
-            return this.convert(info.def.def.type, sub, false);
-          } finally {
-            this.expanding.delete(q);
-          }
+          if (info.alias === undefined) throw new MossError(`type abbreviation '${te.name}' is cyclic`, te.span);
+          return substitute(info.alias, new Map(info.vars.map((v, i) => [v, args[i]!])));
         }
         return tcon(q, ...args);
       }
@@ -381,9 +385,10 @@ class Checker {
         const t = this.convert(d.type, new Map(), true);
         this.level--;
         const q = qualify(this.mod, d.name);
-        this.values.set(q, generalize(t, this.level));
+        this.values.set(q, { scheme: generalize(t, this.level), attrs: d.attrs });
         this.define("values", d.name, q);
-        this.globals.set(q, { kind: "external", js: d.js, arity: arity(t) });
+        // Recorded on this declaration, so a later binding of the same name can't change it.
+        d.arity = arity(t);
         return;
       }
       case "let": {
@@ -393,9 +398,8 @@ class Checker {
           this.expect(d.span, instantiate(t, this.level), tcon("effect", tUnit), "'main'");
         }
         const q = qualify(this.mod, d.name);
-        this.values.set(q, t);
+        this.values.set(q, { scheme: t, attrs: [] });
         this.define("values", d.name, q);
-        this.globals.set(q, { kind: "let", arity: d.params.length });
         return;
       }
       case "open": {
@@ -412,24 +416,29 @@ class Checker {
     if (this.types.has(q) || BUILTIN_TYPES[d.name] !== undefined) {
       throw new MossError(`type '${d.name}' is already defined`, d.span);
     }
-    this.types.set(q, { params: d.params, def: d });
+    const tvars = d.params.map(() => tvar(0));
+    const info: TypeInfo = { params: d.params, vars: tvars, def: d };
+    // Registered before its parts are resolved, so recursive types can refer to themselves.
+    this.types.set(q, info);
     this.define("types", d.name, q);
-    const vars = new Map<string, Type>(d.params.map((p) => [p, tvar(0)]));
+    const vars = new Map<string, Type>(d.params.map((p, i) => [p, tvars[i]!]));
     const def = d.def;
     if (def.kind === "variant") {
-      def.ctors.forEach((c, index) => {
-        if (c.arg) this.convert(c.arg, vars, false); // validate
+      info.ctorArgs = def.ctors.map((c, index) => {
+        const arg = c.arg ? this.convert(c.arg, vars, false) : null;
         const cq = qualify(this.mod, c.name);
-        this.ctors.set(cq, { typeName: q, params: d.params, arg: c.arg, index });
+        this.ctors.set(cq, { typeName: q, arg, index });
         this.define("ctors", c.name, cq);
+        return arg;
       });
     } else if (def.kind === "record") {
+      info.fields = new Map();
       for (const f of def.fields) {
-        this.convert(f.type, vars, false);
+        info.fields.set(f.name, this.convert(f.type, vars, false));
         this.define("fields", f.name, q);
       }
     } else if (def.kind === "alias") {
-      this.convert(def.type, vars, false);
+      info.alias = this.convert(def.type, vars, false);
     }
   }
 
@@ -535,36 +544,23 @@ class Checker {
     const q = this.resolve("ctors", name, span, "constructor");
     const info = q === undefined ? undefined : this.ctors.get(q);
     if (!info || q === undefined) throw new MossError(`unknown constructor '${name}'`, span);
-    const vars = new Map<string, Type>(info.params.map((p) => [p, tvar(this.level)]));
-    const result = tcon(info.typeName, ...info.params.map((p) => vars.get(p)!));
-    // A constructor's argument type is written in its own module: resolve names there.
-    const arg = info.arg ? this.inModuleOf(info.typeName, () => this.convert(info.arg!, vars, false)) : null;
-    return { result, arg, resolved: q };
+    const { type: result, sub } = this.instType(info.typeName);
+    return { result, arg: info.arg && substitute(info.arg, sub), resolved: q };
   }
 
-  /** Run `f` with name resolution of the module that defines the type `q`. */
-  private inModuleOf<T>(q: string, f: () => T): T {
-    const dot = q.lastIndexOf(".");
-    const m = dot < 0 ? PRELUDE : q.slice(0, dot);
-    if (m === this.mod) return f();
-    const saved = this.env;
-    this.env = new ModEnv();
-    if (m !== PRELUDE) this.env.addAll(this.exports.get(PRELUDE)!);
-    this.env.addAll(this.exports.get(m)!);
-    try {
-      return f();
-    } finally {
-      this.env = saved;
-    }
+  /** A fresh instance of type definition `q`: the type, and the substitution for its parameters. */
+  private instType(q: string): { type: Type; sub: Map<TVar, Type> } {
+    const info = this.types.get(q)!;
+    const fresh = info.vars.map(() => tvar(this.level));
+    return { type: tcon(q, ...fresh), sub: new Map(info.vars.map((v, i) => [v, fresh[i]!])) };
   }
 
   private instRecord(typeName: string): { type: Type; fields: Map<string, Type> } {
     const info = this.types.get(typeName)!;
-    const vars = new Map<string, Type>(info.params.map((p) => [p, tvar(this.level)]));
-    const def = info.def.def;
-    if (def.kind !== "record") throw new Error("not a record");
-    const fields = this.inModuleOf(typeName, () => new Map(def.fields.map((f) => [f.name, this.convert(f.type, vars, false)] as const)));
-    return { type: tcon(typeName, ...info.params.map((p) => vars.get(p)!)), fields };
+    if (!info.fields) throw new Error("not a record");
+    const { type, sub } = this.instType(typeName);
+    const fields = new Map([...info.fields].map(([n, t]) => [n, substitute(t, sub)] as const));
+    return { type, fields };
   }
 
   // -- expressions ------------------------------------------------------------
@@ -652,7 +648,7 @@ class Checker {
       case "letstar": {
         // Desugaring leaves only tuple-pattern `let*`, whose meaning depends on the operator in scope.
         if (!e.deferred) throw new Error("let* should have been desugared");
-        Object.assign(e, resolveLetStar(e, this.letStarProjects(scope, e.span)));
+        Object.assign(e, resolveLetStar(e, this.letStarProjection(scope, e.span)));
         return this.inferInner(e, scope);
       }
       case "letplus":
@@ -791,15 +787,21 @@ class Checker {
    * Rhizoid's 'a val) rather than the plain one (a monad's 'a)? Decided from
    * the parameter type of the continuation in the operator's type.
    */
-  private letStarProjects(scope: Scope, span: Span): boolean {
-    const s = this.lookupValue(scope, "let*", span)?.scheme;
-    if (!s) throw new MossError("unbound binding operator '( let* )'", span);
-    let t = prune(s.type);
-    if (t.k !== "fun") return false;
-    t = prune(t.to);
-    if (t.k !== "fun") return false;
-    const k = prune(t.from);
-    return k.k === "fun" && prune(k.from).k === "con";
+  /**
+   * The operator that projects tuple patterns for the in-scope `( let* )`, if
+   * it declares one with `[@@project_with "..."]`; otherwise null, and tuple
+   * patterns are matched as in OCaml.
+   */
+  private letStarProjection(scope: Scope, span: Span): string | null {
+    const found = this.lookupValue(scope, "let*", span);
+    if (!found) throw new MossError("unbound binding operator '( let* )': open a module that defines it (e.g. 'open Rhizoid')", span);
+    if (found.resolved === undefined) return null; // a local definition carries no attributes
+    const attr = this.values.get(found.resolved)!.attrs.find((a) => a.name === "project_with");
+    if (!attr) return null;
+    if (!attr.arg || !(BINDING_OPS as readonly string[]).includes(attr.arg)) {
+      throw new MossError(`[@@project_with] must name a binding operator, e.g. [@@project_with "let+"]`, attr.span);
+    }
+    return attr.arg;
   }
 
   private collectPatVars(p: Pat, out: string[] = []): string[] {

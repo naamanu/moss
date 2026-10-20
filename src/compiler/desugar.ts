@@ -7,26 +7,36 @@
 // The operators are ordinary names resolved in scope, so any library (or user
 // code) can define them.
 //
-// A tuple pattern on `let*` depends on what the in-scope `( let* )` passes to
-// its continuation. For a monad ('a m -> ('a -> 'b m) -> 'b m) it's the plain
-// value, matched as in OCaml. For Rhizoid's `let*` ('a comp -> ('a val -> ...))
-// it's an incremental value, which a pattern can't take apart, so each
-// variable is projected out with `let+` (what Bonsai's `let%sub` does):
+// Every `let*` means `( let* ) value (fun pattern -> body)`, as in OCaml,
+// with one declared exception. A `( let* )` whose continuation receives a
+// *wrapped* value (Rhizoid's `'a comp -> ('a val -> ...)`) can't have its
+// argument taken apart by a pattern, so it may declare a projection operator:
+//
+//   external ( let* ) : ... = "let_star" [@@project_with "let+"]
+//
+// Then a tuple pattern projects each variable into its own wrapped value (what
+// Bonsai's `let%sub` does):
 //
 //   let* (a, b) = c in body
 //     ~>  let* t = c in
 //         let* a = (let+ (a, _) = t in a) in
 //         let* b = (let+ (_, b) = t in b) in body
 //
-// That choice needs the operator's type, so tuple-pattern `let*` nodes are
-// left `deferred` here and resolved by the type checker (`resolveLetStar`).
+// Whether the in-scope operator declares this is known only after name
+// resolution, so non-variable `let*` patterns are left `deferred` here and
+// resolved by the type checker (`resolveLetStar`). Nothing is inferred from
+// types.
 //
 //   match* v with p_0 -> b_0 | ... | p_n -> b_n
 //     ~>  ( match* ) v
 //           (fun x -> match x with p_0 -> 0 | ... | p_n -> n)
 //           (fun i v' -> match i with
-//              | 0 -> let* (vars of p_0) = (let+ x = v' in match x with p_0 -> (vars)) in b_0
+//              | 0 -> let* a = (let+ x = v' in match x with p_0 -> a) in   (one per variable of p_0)
+//                     b_0
 //              | ...)
+//
+// So `match*` relies on the in-scope `( let* )` and `( let+ )` composing that
+// way (as Rhizoid's do), with only variable patterns on `let*`.
 //
 // `( match* )` must call the branch function with a view of the scrutinee that
 // only updates while it matches that branch, so the projections above never
@@ -107,17 +117,20 @@ function letStar(pat: Pat, value: Expr, body: Expr, span: Span): Expr {
  * hands its continuation a wrapped value (see the header comment).
  * Children are already desugared.
  */
-export function resolveLetStar(e: Expr & { e: "letstar" }, projecting: boolean): Expr {
+export function resolveLetStar(e: Expr & { e: "letstar" }, projectWith: string | null): Expr {
   const { pat, value, body, span } = e;
-  if (!projecting) return app("let*", [value, fun([pat], body, span)], span);
+  if (projectWith === null) return app("let*", [value, fun([pat], body, span)], span);
   const inner = pat.p === "annot" ? pat.pat : pat;
+  // `()` binds nothing: the wrapped unit is simply ignored.
   if (inner.p === "unit") return app("let*", [value, fun([{ p: "wild", span: pat.span }], body, span)], span);
-  if (inner.p !== "tuple") throw new MossError("this 'let*' binds incremental values: its pattern can only use variables, '_' and tuples", pat.span);
-  // Project each variable out of the tuple as its own incremental value.
+  if (inner.p !== "tuple") {
+    throw new MossError(`this 'let*' binds wrapped values ([@@project_with "${projectWith}"]): its pattern can only use variables, '_' and tuples`, pat.span);
+  }
+  // Project each variable out of the tuple as its own wrapped value.
   const t = fresh("t");
   let rest = body;
   for (const name of patVars(pat).reverse()) {
-    const proj = app("let+", [v(t, span), fun([only(pat, name)], v(name, span), span)], span);
+    const proj = app(projectWith, [v(t, span), fun([only(pat, name)], v(name, span), span)], span);
     rest = app("let*", [proj, fun([pv(name, span)], rest, span)], span);
   }
   return app("let*", [value, fun([pv(t, span)], rest, span)], span);
@@ -141,23 +154,22 @@ function matchStar(scrut: Expr, cases: Case[], span: Span): Expr {
   const branches: Case[] = cases.map((c, k) => {
     const vars = patVars(c.pat);
     let body = c.body;
-    if (vars.length > 0) {
+    // Each pattern variable becomes its own value projected out of the view.
+    for (const name of [...vars].reverse()) {
       const y = fresh("y");
-      const tuple: Expr = vars.length === 1 ? v(vars[0]!, span) : { e: "tuple", items: vars.map((n) => v(n, span)), span };
       const project = app(
         "let+",
         [
           v(view, span),
           fun(
             [pv(y, span)],
-            { e: "match", scrut: v(y, span), cases: [{ pat: c.pat, guard: null, body: tuple }], generated: true, span },
+            { e: "match", scrut: v(y, span), cases: [{ pat: c.pat, guard: null, body: v(name, span) }], generated: true, span },
             span,
           ),
         ],
         span,
       );
-      const pat: Pat = vars.length === 1 ? pv(vars[0]!, span) : { p: "tuple", items: vars.map((n) => pv(n, span)), span };
-      body = letStar(pat, project, body, span);
+      body = app("let*", [project, fun([pv(name, span)], body, span)], span);
     }
     const last = k === cases.length - 1;
     return { pat: last ? { p: "wild", span } : { p: "int", value: k, span }, guard: null, body };

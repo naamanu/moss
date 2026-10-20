@@ -121,14 +121,23 @@ let sum a b = let* x = a and* y = b in Some (x + y)
 
 Two forms do more than a single call:
 
-- **A tuple pattern on `let*`** depends on what the in-scope `( let* )`
-  passes to its continuation. If it's the plain value (a monad,
-  `'a m -> ('a -> 'b m) -> 'b m`), the tuple is matched, as in OCaml. If it's
-  a wrapped value, like a Rhizoid computation's `'a val`, each variable is projected
-  out with `let+`, which is what Bonsai's `let%sub` does.
+- **A tuple pattern on `let*`, for an operator that declares a projection.**
+  A `( let* )` whose continuation receives a *wrapped* value (Rhizoid's
+  `'a comp -> ('a val -> 'b comp) -> 'b comp`) can't have its argument taken
+  apart by a pattern. Such an operator declares how to project instead:
+
+  ```ocaml
+  external ( let* ) : 'a comp -> ('a val -> 'b comp) -> 'b comp = "let_star" [@@project_with "let+"]
+  ```
+
+  Then `let* (a, b) = c in body` projects each variable into its own wrapped
+  value with `let+`, which is what Bonsai's `let%sub` does. Without the
+  declaration, every pattern is matched as in OCaml. The compiler never
+  infers this from types.
 - **`match* v with ...`** becomes a call to `( match* ) v index branch`.
   `index` maps a value to its case number. `branch i view` builds case `i`,
-  and its pattern variables are projected out of `view` with `let+`.
+  and each of its pattern variables is projected out of `view` with `let+`
+  and bound with `let*`.
 
 A binding operator can also be named with a module: `Rhizoid.( let* )`.
 
@@ -146,6 +155,8 @@ A binding operator can also be named with a module: `Rhizoid.( let* )`.
     polymorphic code), it raises `equal: functional value` (or
     `abstract value`, or `compare: …` for ordering).
   - `nan = nan` is `false`, and so is `(nan, 1) = (nan, 1)`.
+  - The result never depends on whether two values are the same object:
+    `let p = (nan, 1)` gives `p = p` → `false`, like a copy would.
 - **Ordering.** `<`, `>`, `<=`, `>=` on numbers, strings and booleans are the
   usual ones. On other types, and for map keys, a total structural order is
   used:
@@ -188,6 +199,10 @@ type 'a val [@@opaque] [@@hint_found "a 'val' can only be read inside 'let+ x = 
   type was used but a different type was expected.
 - `[@@hint_expected "..."]`: a hint added when a different type was used
   where this one was expected. It takes precedence over `hint_found`.
+
+An `external` can carry attributes too. The one the compiler knows is
+`[@@project_with "let+"]` on a `( let* )`, described under
+[Binding operators](#binding-operators).
 
 
 ## Layout

@@ -128,9 +128,10 @@ class Gen {
         }
         return;
       case "external": {
-        let arity = 0;
-        for (let t = d.type; t.t === "fun"; t = t.to) arity++;
-        this.globals.set(qualify(this.modOf(d), d.name), { js: `${this.runtimeOf(d)}.${d.js}`, arity: arity > 1 ? arity : 0 });
+        // The arity of the *resolved* type: an alias like `type f = int -> int -> int` still takes two arguments.
+        const q = qualify(this.modOf(d), d.name);
+        const arity = d.arity!;
+        this.globals.set(q, { js: `${this.runtimeOf(d)}.${d.js}`, arity: arity > 1 ? arity : 0 });
         return;
       }
       case "open":
