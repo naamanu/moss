@@ -22,7 +22,7 @@ interface Binding {
 
 class Env {
   private m = new Map<string, Binding>();
-  constructor(readonly parent: Env | null) {}
+  constructor(readonly parent: Env | null) { }
   get(name: string): Binding | undefined {
     for (let e: Env | null = this; e; e = e.parent) {
       const b = e.m.get(name);
@@ -62,12 +62,13 @@ class Gen {
   /** Qualified constructor name -> {JS constant for nullary ctors, declaration index}. */
   private ctorJs = new Map<string, { js: string | null; index: number }>();
 
-  constructor(private readonly checked: Checked) {}
+  constructor(private readonly checked: Checked) { }
 
   private fresh(base: string): string {
     const clean = base.replace(/[^A-Za-z0-9_]/g, "_").replace(/^_+/, "") || "t";
     return `${clean}_${++this.n}`;
   }
+  private() { }
 
   private globalName(name: string): string {
     const base = "$" + name.replace(/\./g, "_").replace(/[^A-Za-z0-9_$]/g, "_");
